@@ -178,30 +178,27 @@ class SegSolver(Solver):
         num_class = self.FLAGS.LOSS.num_class
         IoU, insc, union = self.IoU_per_shape(logit_1, label, num_class)
 
-        folders = [
-            './visual/red_points',
-            './visual/GT_red',
-            './visual/green_points',
-            './visual/GT_green'
-        ]
-        for folder in folders:
-            if not os.path.exists(folder):
-                os.makedirs(folder)
-              
-        red_folder = os.path.join(r"./visual/red_points",
-                                  batch['filename'][0].split("/")[-1].split(".")[0].split("_collision_detection")[
-                                      0] + ".obj")
-        gt_red_folder = os.path.join(r"./visual/GT_red",
-                                     batch['filename'][0].split("/")[-1].split(".")[0].split("_collision_detection")[
-                                         0] + ".obj")
-        green_folder = os.path.join(r'./visual/green_points',
-                                    batch['filename'][0].split("/")[-1].split(".")[0].split("_collision_detection")[
-                                        0] + ".obj")
-        gt_green_folder = os.path.join(r'./visual/GT_green',
-                                       batch['filename'][0].split("/")[-1].split(".")[0].split("_collision_detection")[
-                                           0] + ".obj")
-        self.visualization(batch['points'], logit_1, label, red_folder, gt_red_folder)
-        self.visualization1(batch['points'], logit_2, label_2, green_folder, gt_green_folder)
+        if self.FLAGS.SOLVER.visualize:
+            folders = [
+                './visual/red_points',
+                './visual/GT_red',
+                './visual/green_points',
+                './visual/GT_green'
+            ]
+            for folder in folders:
+                if not os.path.exists(folder):
+                    os.makedirs(folder)
+
+            stem = batch['filename'][0].split("/")[-1].split(".")[0].split(
+                "_collision_detection")[0]
+            red_folder = os.path.join(r"./visual/red_points", stem + ".obj")
+            gt_red_folder = os.path.join(r"./visual/GT_red", stem + ".obj")
+            green_folder = os.path.join(r'./visual/green_points', stem + ".obj")
+            gt_green_folder = os.path.join(r'./visual/GT_green', stem + ".obj")
+            self.visualization(
+                batch['points'], logit_1, label, red_folder, gt_red_folder)
+            self.visualization1(
+                batch['points'], logit_2, label_2, green_folder, gt_green_folder)
         pred_1 = logit_1.argmax(dim=-1)
         pred_2 = logit_2.argmax(dim=-1)
         # 这里使用 f1_score 函数，假设 label 和 label_2 都是 0 和 1 的整数标签

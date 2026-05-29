@@ -22,12 +22,24 @@ parser.add_argument('--conditioning', type=str, default='concat',
 parser.add_argument('--mode', type=str, default='randinit')
 parser.add_argument('--ckpt', type=str, default='\'\'')
 parser.add_argument('--ratios', type=float, default=[1], nargs='*')
+parser.add_argument('--quick', action='store_true',
+                    help='Use a small train/test subset for fast trend checks.')
+parser.add_argument('--max-epoch', type=int, default=-1,
+                    help='Override the computed epoch count.')
+parser.add_argument('--test-every-epoch', type=int, default=-1,
+                    help='Override test frequency.')
+parser.add_argument('--train-take', type=int, default=-1,
+                    help='Override the number of training shapes.')
+parser.add_argument('--test-take', type=int, default=-1,
+                    help='Limit the number of test shapes.')
+parser.add_argument('--visualize', action='store_true',
+                    help='Save point visualization obj files during testing.')
 
 args = parser.parse_args()
 alias = args.alias
 gpu = args.gpu
 mode = args.mode
-ratios = args.ratios
+ratios = [0.05] if args.quick else args.ratios
 # ratios = [0.01, 0.02, 0.05, 0.10, 0.20, 0.50, 1.00]
 
 module = 'segmentation.py'
@@ -49,10 +61,21 @@ for i in range(len(ratios)):
 
     mul = 2 if ratios[i] < 0.1 else 1  # longer iterations when data < 10%
     max_epoch = int(max_epoches[k] * ratio * mul)
+    if args.quick:
+      max_epoch = min(max_epoch, 30)
+    if args.max_epoch > 0:
+      max_epoch = args.max_epoch
     milestone1, milestone2 = int(0.5 * max_epoch), int(0.25 * max_epoch)
     # test_every_epoch = int(math.ceil(max_epoch * 0.02))
     test_every_epoch = 50
+    if args.quick:
+      test_every_epoch = 5
+    if args.test_every_epoch > 0:
+      test_every_epoch = args.test_every_epoch
     take = int(math.ceil(train_num[k] * ratio))
+    if args.train_take > 0:
+      take = args.train_take
+    test_take = 100 if args.quick else args.test_take
     logs = os.path.join(
         logdir, '{}/{}_{}/ratio_{:.2f}'.format(alias, cat, names[k], ratio))
 
@@ -64,11 +87,13 @@ for i in range(len(ratios)):
         'SOLVER.milestones {},{}'.format(milestone1, milestone2),
         'SOLVER.test_every_epoch {}'.format(test_every_epoch),
         'SOLVER.ckpt {}'.format(args.ckpt),
+        'SOLVER.visualize {}'.format(args.visualize),
         'DATA.train.depth {}'.format(args.depth),
         'DATA.train.filelist {}/filelist/{}_train_val.txt'.format(data, cat),
         'DATA.train.take {}'.format(take),
         'DATA.test.depth {}'.format(args.depth),
         'DATA.test.filelist {}/filelist/{}_test.txt'.format(data, cat),
+        'DATA.test.take {}'.format(test_take),
         'MODEL.stages {}'.format(args.depth - 2),
         'MODEL.nout {}'.format(seg_num[k]),
         'MODEL.name {}'.format(args.model),

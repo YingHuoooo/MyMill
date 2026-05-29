@@ -14,6 +14,7 @@ SOLVER:
   logdir: logs/seg_shapenet/02691156_airplane_d5
   max_epoch: 300
   test_every_epoch: 10
+  visualize: False
 
   # lr_type: cos
   milestones: (120,180,240)
