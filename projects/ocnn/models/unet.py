@@ -34,6 +34,9 @@ class ToolConditionMLP(torch.nn.Module):
         else:
             raise ValueError('Unsupported conditioning: %s' % conditioning)
 
+    def forward(self, tool_params: torch.Tensor) -> torch.Tensor:
+        return self.net(tool_params)
+
 class UNet(torch.nn.Module):
     r''' Octree-based UNet for segmentation.
     '''
