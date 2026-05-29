@@ -25,8 +25,8 @@ Fast trend check before full training:
 
 ```bash
 cd projects
-python run_seg_deepmill.py --quick --depth 4 --model unet --conditioning concat --alias quick_concat_d4
-python run_seg_deepmill.py --quick --depth 4 --model unet --conditioning film --alias quick_film_d4
+python run_seg_deepmill.py --quick --depth 5 --model unet --conditioning concat --alias quick_concat_d5
+python run_seg_deepmill.py --quick --depth 5 --model unet --conditioning film --alias quick_film_d5
 ```
 
 The quick mode uses 5% of the training split, at most 30 epochs, tests every 5

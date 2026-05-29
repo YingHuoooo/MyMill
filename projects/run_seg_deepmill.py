@@ -36,6 +36,10 @@ parser.add_argument('--visualize', action='store_true',
                     help='Save point visualization obj files during testing.')
 
 args = parser.parse_args()
+if args.model.lower() == 'unet' and args.depth < 5:
+  raise ValueError(
+      'UNet requires --depth >= 5 because the current architecture uses '
+      'four encoder downsampling stages. Use --depth 5 for quick ablations.')
 alias = args.alias
 gpu = args.gpu
 mode = args.mode
