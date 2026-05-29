@@ -1,0 +1,34 @@
+# DeepMill Improvement Experiments
+
+## Baselines
+
+- `concat`: original DeepMill tool conditioning. Each decoder scale receives a 256-dimensional tool feature that is expanded to octree nodes and concatenated with geometry features.
+- `film`: experimental FiLM conditioning. Each decoder scale receives tool-conditioned affine parameters and modulates decoder features with `feature * (1 + gamma) + beta`.
+
+## Run Examples
+
+Baseline-compatible run:
+
+```bash
+cd projects
+python run_seg_deepmill.py --depth 5 --model unet --conditioning concat --alias unet_d5_concat
+```
+
+FiLM ablation run:
+
+```bash
+cd projects
+python run_seg_deepmill.py --depth 5 --model unet --conditioning film --alias unet_d5_film
+```
+
+## Planned Next Ablations
+
+- `FiLM`: compare `concat` and `film` with the same split, seed, depth, and training schedule.
+- `CRC`: calibrate decision thresholds on a held-out calibration split to control false negative risk for inaccessible and occluded point labels.
+- `MC-CP + CRC`: use Monte Carlo dropout to estimate predictive uncertainty, then use conformal calibration to produce risk-controlled prediction sets.
+
+## Suggested Metrics
+
+- Primary: `f1_red`, `f1_green`, `f1_avg`, `mIoU`.
+- Safety-oriented: false negative rate for inaccessible points, false negative rate for occluded points.
+- Efficiency-oriented: percentage of points flagged as inaccessible/occluded after CRC calibration.

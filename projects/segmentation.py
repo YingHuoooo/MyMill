@@ -29,7 +29,8 @@ class SegSolver(Solver):
                 flags.channel, flags.nout, flags.stages, flags.interp, flags.nempty)
         elif flags.name.lower() == 'unet':
             model = ocnn.models.UNet(
-                flags.channel, flags.nout, flags.interp, flags.nempty)
+                flags.channel, flags.nout, flags.interp, flags.nempty,
+                conditioning=flags.conditioning)
         else:
             raise ValueError
         return model
@@ -82,7 +83,8 @@ class SegSolver(Solver):
         tool_params = batch['tool_params']  # 获取刀具参数
         # print(f"Original tool_params: {tool_params}, type: {type(tool_params)}")
         tool_params = [[float(item) for item in row] for row in tool_params]
-        tool_params = torch.tensor(tool_params, dtype=torch.float32).cuda() #FC: 需要标注GPU序号
+        tool_params = torch.tensor(
+            tool_params, dtype=torch.float32, device=data.device)
         # print(f"Processed tool_params: {tool_params}, type: {type(tool_params)}, shape: {tool_params.shape}")
 
         # 将刀具参数传递给模型
