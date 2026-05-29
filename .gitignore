@@ -1,0 +1,11 @@
+pretrained/
+projects/data/raw_data/
+projects/data/points/
+projects/data/filelist/
+projects/visual/
+visual/
+logs/
+*.log
+*.pyc
+__pycache__/
+.DS_Store
