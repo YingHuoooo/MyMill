@@ -19,8 +19,6 @@ class ToolConditionMLP(torch.nn.Module):
         self.net = torch.nn.Sequential(
             torch.nn.Linear(4, 32),
             torch.nn.ReLU(),
-            torch.nn.BatchNorm1d(32),
-            torch.nn.Dropout(0.3),
             torch.nn.Linear(32, out_channels),
         )
         torch.nn.init.zeros_(self.net[-1].weight)

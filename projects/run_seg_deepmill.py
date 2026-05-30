@@ -54,6 +54,8 @@ parser.add_argument('--resume-optimizer', type=str2bool, default=True,
                     help='Restore optimizer and scheduler states from solver checkpoints.')
 parser.add_argument('--reset-epoch', action='store_true',
                     help='Restart training from epoch 1 after loading a checkpoint.')
+parser.add_argument('--trainable-keywords', type=str, default='',
+                    help='Comma-separated parameter name filters to train.')
 
 args = parser.parse_args()
 if args.model.lower() == 'unet' and args.depth < 5:
@@ -114,6 +116,7 @@ for i in range(len(ratios)):
         'SOLVER.ckpt_strict {}'.format(args.strict_load),
         'SOLVER.resume_optimizer {}'.format(args.resume_optimizer),
         'SOLVER.reset_epoch {}'.format(args.reset_epoch),
+        'SOLVER.trainable_keywords {}'.format(args.trainable_keywords),
         'SOLVER.visualize {}'.format(args.visualize),
         'DATA.train.depth {}'.format(args.depth),
         'DATA.train.filelist {}/filelist/{}_train_val.txt'.format(data, cat),

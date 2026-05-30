@@ -29,6 +29,7 @@ _C.SOLVER.ckpt_num          = 10         # The number of checkpoint kept
 _C.SOLVER.ckpt_strict       = True       # Strictly match checkpoint weights
 _C.SOLVER.resume_optimizer  = True       # Restore optimizer/scheduler states
 _C.SOLVER.reset_epoch       = False      # Restart from epoch 1 after loading
+_C.SOLVER.trainable_keywords = ''        # Comma-separated trainable name filters
 
 _C.SOLVER.type              = 'sgd'      # Choose from sgd or adam
 _C.SOLVER.weight_decay      = 0.0005     # The weight decay on model weights

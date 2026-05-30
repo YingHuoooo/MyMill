@@ -115,7 +115,28 @@ class Solver:
     # The base learning rate `base_lr` scales with regard to the world_size
     flags = self.FLAGS.SOLVER
     base_lr = flags.lr * self.world_size
-    parameters = self.model.parameters()
+    keywords = [key.strip() for key in flags.trainable_keywords.split(',')
+                if key.strip()]
+    if keywords:
+      model = self.model.module if self.world_size > 1 else self.model
+      parameters = []
+      trainable_names = []
+      for name, param in model.named_parameters():
+        trainable = any(key in name for key in keywords)
+        param.requires_grad = trainable
+        if trainable:
+          parameters.append(param)
+          trainable_names.append(name)
+      if not parameters:
+        raise ValueError('No parameters match trainable_keywords: %s' %
+                         flags.trainable_keywords)
+      if self.is_master:
+        tqdm.write('Trainable parameter filters: %s' % keywords)
+        tqdm.write('Trainable parameters: %d tensors, %.3fM params' % (
+            len(parameters), sum(p.numel() for p in parameters) / 1e6))
+        tqdm.write('First trainable names: %s' % trainable_names[:8])
+    else:
+      parameters = self.model.parameters()
 
     # config the optimizer
     if flags.type.lower() == 'sgd':

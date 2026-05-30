@@ -46,7 +46,7 @@ FiLM parameters:
 
 ```bash
 cd projects
-python run_seg_deepmill.py --depth 5 --model unet --conditioning film --alias film_ft_from_840 --ratios 1.0 --max-epoch 100 --test-every-epoch 10 --ckpt ../pretrained/00840solver/00840.solver.tar --strict-load false --resume-optimizer false --reset-epoch --lr 0.001
+python run_seg_deepmill.py --depth 5 --model unet --conditioning film --alias film_ft_from_840 --ratios 1.0 --max-epoch 100 --test-every-epoch 10 --ckpt ../pretrained/00840solver/00840.solver.tar --strict-load false --resume-optimizer false --reset-epoch --lr 0.0001 --trainable-keywords film_conditioners
 ```
 
 ## Suggested Metrics
