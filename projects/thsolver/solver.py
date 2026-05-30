@@ -289,20 +289,25 @@ class Solver:
     trained_dict = torch.load(ckpt, map_location='cuda')
     if ckpt.endswith('.solver.tar'):
       model_dict = trained_dict['model_dict']
-      self.start_epoch = trained_dict['epoch'] + 1  # !!! add 1
-      if self.optimizer:
+      if not self.FLAGS.SOLVER.reset_epoch:
+        self.start_epoch = trained_dict['epoch'] + 1  # !!! add 1
+      if self.optimizer and self.FLAGS.SOLVER.resume_optimizer:
         self.optimizer.load_state_dict(trained_dict['optimizer_dict'])
-      if self.scheduler:
+      if self.scheduler and self.FLAGS.SOLVER.resume_optimizer:
         self.scheduler.load_state_dict(trained_dict['scheduler_dict'])
     else:
       model_dict = trained_dict
     model = self.model.module if self.world_size > 1 else self.model
-    model.load_state_dict(model_dict)
+    load_info = model.load_state_dict(
+        model_dict, strict=self.FLAGS.SOLVER.ckpt_strict)
 
     # print messages
     if self.is_master:
       tqdm.write('Load the checkpoint: %s' % ckpt)
       tqdm.write('The start_epoch is %d' % self.start_epoch)
+      if not self.FLAGS.SOLVER.ckpt_strict:
+        tqdm.write('Missing keys: %s' % list(load_info.missing_keys))
+        tqdm.write('Unexpected keys: %s' % list(load_info.unexpected_keys))
 
   def manual_seed(self):
     rand_seed = self.FLAGS.SOLVER.rand_seed

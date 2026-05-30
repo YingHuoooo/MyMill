@@ -39,6 +39,16 @@ to decide whether an idea is promising enough for a full run.
 - `CRC`: calibrate decision thresholds on a held-out calibration split to control false negative risk for inaccessible and occluded point labels.
 - `MC-CP + CRC`: use Monte Carlo dropout to estimate predictive uncertainty, then use conformal calibration to produce risk-controlled prediction sets.
 
+## FiLM Fine-Tuning
+
+Initialize FiLM from the author checkpoint while skipping the newly introduced
+FiLM parameters:
+
+```bash
+cd projects
+python run_seg_deepmill.py --depth 5 --model unet --conditioning film --alias film_ft_from_840 --ratios 1.0 --max-epoch 100 --test-every-epoch 10 --ckpt ../pretrained/00840solver/00840.solver.tar --strict-load false --resume-optimizer false --reset-epoch --lr 0.001
+```
+
 ## Suggested Metrics
 
 - Primary: `f1_red`, `f1_green`, `f1_avg`, `mIoU`.

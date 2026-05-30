@@ -12,6 +12,16 @@ import numpy as np
 import  pdb
 import subprocess
 
+def str2bool(value):
+  if isinstance(value, bool):
+    return value
+  value = value.lower()
+  if value in ('true', '1', 'yes', 'y'):
+    return True
+  if value in ('false', '0', 'no', 'n'):
+    return False
+  raise argparse.ArgumentTypeError('Boolean value expected.')
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--alias', type=str, default='unet_d5')
 parser.add_argument('--gpu', type=str, default='0')
@@ -34,6 +44,16 @@ parser.add_argument('--test-take', type=int, default=-1,
                     help='Limit the number of test shapes.')
 parser.add_argument('--visualize', action='store_true',
                     help='Save point visualization obj files during testing.')
+parser.add_argument('--lr', type=float, default=-1,
+                    help='Override the learning rate.')
+parser.add_argument('--lr-type', type=str, default='',
+                    help='Override the learning rate schedule type.')
+parser.add_argument('--strict-load', type=str2bool, default=True,
+                    help='Strictly match checkpoint weights.')
+parser.add_argument('--resume-optimizer', type=str2bool, default=True,
+                    help='Restore optimizer and scheduler states from solver checkpoints.')
+parser.add_argument('--reset-epoch', action='store_true',
+                    help='Restart training from epoch 1 after loading a checkpoint.')
 
 args = parser.parse_args()
 if args.model.lower() == 'unet' and args.depth < 5:
@@ -91,6 +111,9 @@ for i in range(len(ratios)):
         'SOLVER.milestones {},{}'.format(milestone1, milestone2),
         'SOLVER.test_every_epoch {}'.format(test_every_epoch),
         'SOLVER.ckpt {}'.format(args.ckpt),
+        'SOLVER.ckpt_strict {}'.format(args.strict_load),
+        'SOLVER.resume_optimizer {}'.format(args.resume_optimizer),
+        'SOLVER.reset_epoch {}'.format(args.reset_epoch),
         'SOLVER.visualize {}'.format(args.visualize),
         'DATA.train.depth {}'.format(args.depth),
         'DATA.train.filelist {}/filelist/{}_train_val.txt'.format(data, cat),
@@ -104,6 +127,10 @@ for i in range(len(ratios)):
         'MODEL.conditioning {}'.format(args.conditioning),
         'LOSS.num_class {}'.format(seg_num[k])
     ]
+    if args.lr > 0:
+      cmds.append('SOLVER.lr {}'.format(args.lr))
+    if args.lr_type:
+      cmds.append('SOLVER.lr_type {}'.format(args.lr_type))
 
     cmd = ' '.join(cmds)
     print('\n', cmd, '\n')

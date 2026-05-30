@@ -59,11 +59,10 @@ class UNet(torch.nn.Module):
         # decoder
         channel = [self.decoder_channel[i+1] + self.encoder_channel[-i-2]
                    for i in range(self.decoder_stages)]
-        if self.conditioning == 'concat':
-            channel = [c + 256 for c in channel]
-        elif self.conditioning == 'film':
+        channel = [c + 256 for c in channel]
+        if self.conditioning == 'film':
             condition_channels = [2 * c for c in self.decoder_channel[1:]]
-        else:
+        elif self.conditioning != 'concat':
             raise ValueError('Unsupported conditioning: %s' % conditioning)
 
         self.upsample = torch.nn.ModuleList([ocnn.modules.OctreeDeconvBnRelu(
@@ -153,7 +152,7 @@ class UNet(torch.nn.Module):
         return convd
 
     def unet_decoder(self, convd: Dict[int, torch.Tensor], octree: Octree,
-                     depth: int, tool_conditions):
+                     depth: int, tool_features, film_conditions=None):
         r''' The decoder of the U-Net.
         '''
         deconv = convd[depth]
@@ -162,12 +161,13 @@ class UNet(torch.nn.Module):
             deconv = self.upsample[i](deconv, octree, d)
 
             copy_counts = octree.batch_nnum[i + 2]
-            expanded_tool_features = expand_batch_features(tool_conditions[i], copy_counts)
-            if self.conditioning == 'concat':
-                deconv = torch.cat([expanded_tool_features, deconv], dim=1)
-            else:
-                gamma, beta = torch.chunk(expanded_tool_features, 2, dim=1)
+            if film_conditions is not None:
+                expanded_film = expand_batch_features(film_conditions[i], copy_counts)
+                gamma, beta = torch.chunk(expanded_film, 2, dim=1)
                 deconv = deconv * (1.0 + gamma) + beta
+
+            expanded_tool_features = expand_batch_features(tool_features[i], copy_counts)
+            deconv = torch.cat([expanded_tool_features, deconv], dim=1)
 
             deconv = torch.cat([convd[d+1], deconv], dim=1)  # skip connections
             deconv = self.decoder[i](deconv, octree, d+1)
@@ -180,19 +180,20 @@ class UNet(torch.nn.Module):
 
         convd = self.unet_encoder(data, octree, depth)
 
-        if self.conditioning == 'concat':
-            tool_conditions = [
-                self.fc_module_1(tool_params),
-                self.fc_module_2(tool_params),
-                self.fc_module_3(tool_params),
-                self.fc_module_4(tool_params),
-            ]
-        else:
-            tool_conditions = [conditioner(tool_params)
+        tool_features = [
+            self.fc_module_1(tool_params),
+            self.fc_module_2(tool_params),
+            self.fc_module_3(tool_params),
+            self.fc_module_4(tool_params),
+        ]
+        film_conditions = None
+        if self.conditioning == 'film':
+            film_conditions = [conditioner(tool_params)
                                for conditioner in self.film_conditioners]
 
         deconv = self.unet_decoder(
-            convd, octree, depth - self.encoder_stages, tool_conditions)
+            convd, octree, depth - self.encoder_stages, tool_features,
+            film_conditions)
 
         interp_depth = depth - self.encoder_stages + self.decoder_stages
         # print(f"deconv shape: {deconv.shape}")
