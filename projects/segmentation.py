@@ -30,7 +30,7 @@ class SegSolver(Solver):
         elif flags.name.lower() == 'unet':
             model = ocnn.models.UNet(
                 flags.channel, flags.nout, flags.interp, flags.nempty,
-                conditioning=flags.conditioning)
+                conditioning=flags.conditioning, film_scale=flags.film_scale)
         else:
             raise ValueError
         return model

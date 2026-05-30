@@ -99,6 +99,7 @@ _C.DATA.test.num_workers    = 2
 _C.MODEL = CN(new_allowed=True)
 _C.MODEL.name               = ''          # The name of the model
 _C.MODEL.conditioning       = 'concat'    # Tool conditioning: concat or film
+_C.MODEL.film_scale         = 1.0         # Residual scale for FiLM modulation
 _C.MODEL.feature            = 'ND'        # The input features
 _C.MODEL.channel            = 3           # The input feature channel
 _C.MODEL.nempty             = False       # Perform Octree Conv on non-empty octree nodes

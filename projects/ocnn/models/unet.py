@@ -32,12 +32,14 @@ class UNet(torch.nn.Module):
     '''
 
     def __init__(self, in_channels: int, out_channels: int, interp: str = 'linear',
-                 nempty: bool = False, conditioning: str = 'concat', **kwargs):
+                 nempty: bool = False, conditioning: str = 'concat',
+                 film_scale: float = 1.0, **kwargs):
         super(UNet, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.nempty = nempty
         self.conditioning = conditioning.lower()
+        self.film_scale = film_scale
         self.config_network()
         self.encoder_stages = len(self.encoder_blocks)
         self.decoder_stages = len(self.decoder_blocks)
@@ -162,7 +164,8 @@ class UNet(torch.nn.Module):
             if film_conditions is not None:
                 expanded_film = expand_batch_features(film_conditions[i], copy_counts)
                 gamma, beta = torch.chunk(expanded_film, 2, dim=1)
-                deconv = deconv * (1.0 + gamma) + beta
+                deconv = deconv * (1.0 + self.film_scale * gamma) + \
+                    self.film_scale * beta
 
             expanded_tool_features = expand_batch_features(tool_features[i], copy_counts)
             deconv = torch.cat([expanded_tool_features, deconv], dim=1)

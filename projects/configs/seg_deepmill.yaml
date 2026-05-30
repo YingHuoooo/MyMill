@@ -74,6 +74,7 @@ DATA:
 MODEL:
   name: segnet
   conditioning: concat  # concat -> original tool-feature concatenation; film -> FiLM modulation
+  film_scale: 1.0
   feature: ND   # N -> Normal(3 channels);
                 # D -> Local displacement(1 channel)
   upsample: 'nearest'   # The method used for upsampling

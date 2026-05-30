@@ -29,6 +29,8 @@ parser.add_argument('--depth', type=int, default=5)
 parser.add_argument('--model', type=str, default='unet')
 parser.add_argument('--conditioning', type=str, default='concat',
                     choices=['concat', 'film'])
+parser.add_argument('--film-scale', type=float, default=1.0,
+                    help='Residual scale for FiLM modulation.')
 parser.add_argument('--mode', type=str, default='randinit')
 parser.add_argument('--ckpt', type=str, default='\'\'')
 parser.add_argument('--ratios', type=float, default=[1], nargs='*')
@@ -128,6 +130,7 @@ for i in range(len(ratios)):
         'MODEL.nout {}'.format(seg_num[k]),
         'MODEL.name {}'.format(args.model),
         'MODEL.conditioning {}'.format(args.conditioning),
+        'MODEL.film_scale {}'.format(args.film_scale),
         'LOSS.num_class {}'.format(seg_num[k])
     ]
     if args.lr > 0:
