@@ -14,9 +14,8 @@ def expand_batch_features(features: torch.Tensor, counts) -> torch.Tensor:
 
 
 class ToolConditionMLP(torch.nn.Module):
-    def __init__(self, out_channels: int, conditioning: str):
+    def __init__(self, out_channels: int):
         super().__init__()
-        self.conditioning = conditioning
         self.net = torch.nn.Sequential(
             torch.nn.Linear(4, 32),
             torch.nn.ReLU(),
@@ -24,15 +23,8 @@ class ToolConditionMLP(torch.nn.Module):
             torch.nn.Dropout(0.3),
             torch.nn.Linear(32, out_channels),
         )
-        if conditioning == 'concat':
-            self.net.add_module('relu', torch.nn.ReLU())
-            self.net.add_module('bn', torch.nn.BatchNorm1d(out_channels))
-            self.net.add_module('dropout', torch.nn.Dropout(0.3))
-        elif conditioning == 'film':
-            torch.nn.init.zeros_(self.net[-1].weight)
-            torch.nn.init.zeros_(self.net[-1].bias)
-        else:
-            raise ValueError('Unsupported conditioning: %s' % conditioning)
+        torch.nn.init.zeros_(self.net[-1].weight)
+        torch.nn.init.zeros_(self.net[-1].bias)
 
     def forward(self, tool_params: torch.Tensor) -> torch.Tensor:
         return self.net(tool_params)
@@ -69,7 +61,6 @@ class UNet(torch.nn.Module):
                    for i in range(self.decoder_stages)]
         if self.conditioning == 'concat':
             channel = [c + 256 for c in channel]
-            condition_channels = [256] * self.decoder_stages
         elif self.conditioning == 'film':
             condition_channels = [2 * c for c in self.decoder_channel[1:]]
         else:
@@ -92,9 +83,52 @@ class UNet(torch.nn.Module):
             ocnn.modules.Conv1x1BnRelu(self.decoder_channel[-1], self.head_channel),
             ocnn.modules.Conv1x1(self.head_channel, self.out_channels, use_bias=True))
 
-        self.tool_conditioners = torch.nn.ModuleList([
-            ToolConditionMLP(c, self.conditioning) for c in condition_channels
-        ])
+        self.fc_module_1 = torch.nn.Sequential(
+            torch.nn.Linear(4, 32),
+            torch.nn.ReLU(),
+            torch.nn.BatchNorm1d(32),
+            torch.nn.Dropout(0.3),
+            torch.nn.Linear(32, 256),
+            torch.nn.ReLU(),
+            torch.nn.BatchNorm1d(256),
+            torch.nn.Dropout(0.3),
+        )
+
+        self.fc_module_2 = torch.nn.Sequential(
+            torch.nn.Linear(4, 32),
+            torch.nn.ReLU(),
+            torch.nn.BatchNorm1d(32),
+            torch.nn.Dropout(0.3),
+            torch.nn.Linear(32, 256),
+            torch.nn.ReLU(),
+            torch.nn.BatchNorm1d(256),
+            torch.nn.Dropout(0.3),
+        )
+        self.fc_module_3 = torch.nn.Sequential(
+            torch.nn.Linear(4, 32),
+            torch.nn.ReLU(),
+            torch.nn.BatchNorm1d(32),
+            torch.nn.Dropout(0.3),
+            torch.nn.Linear(32, 256),
+            torch.nn.ReLU(),
+            torch.nn.BatchNorm1d(256),
+            torch.nn.Dropout(0.3),
+        )
+        self.fc_module_4 = torch.nn.Sequential(
+            torch.nn.Linear(4, 32),
+            torch.nn.ReLU(),
+            torch.nn.BatchNorm1d(32),
+            torch.nn.Dropout(0.3),
+            torch.nn.Linear(32, 256),
+            torch.nn.ReLU(),
+            torch.nn.BatchNorm1d(256),
+            torch.nn.Dropout(0.3),
+        )
+
+        if self.conditioning == 'film':
+            self.film_conditioners = torch.nn.ModuleList([
+                ToolConditionMLP(c) for c in condition_channels
+            ])
 
     def config_network(self):
         r''' Configure the network channels and Resblock numbers.
@@ -127,7 +161,7 @@ class UNet(torch.nn.Module):
             d = depth + i
             deconv = self.upsample[i](deconv, octree, d)
 
-            copy_counts = octree.batch_nnum[d + 1]
+            copy_counts = octree.batch_nnum[i + 2]
             expanded_tool_features = expand_batch_features(tool_conditions[i], copy_counts)
             if self.conditioning == 'concat':
                 deconv = torch.cat([expanded_tool_features, deconv], dim=1)
@@ -146,8 +180,16 @@ class UNet(torch.nn.Module):
 
         convd = self.unet_encoder(data, octree, depth)
 
-        tool_conditions = [conditioner(tool_params)
-                           for conditioner in self.tool_conditioners]
+        if self.conditioning == 'concat':
+            tool_conditions = [
+                self.fc_module_1(tool_params),
+                self.fc_module_2(tool_params),
+                self.fc_module_3(tool_params),
+                self.fc_module_4(tool_params),
+            ]
+        else:
+            tool_conditions = [conditioner(tool_params)
+                               for conditioner in self.film_conditioners]
 
         deconv = self.unet_decoder(
             convd, octree, depth - self.encoder_stages, tool_conditions)
