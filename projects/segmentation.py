@@ -433,6 +433,10 @@ class SegSolver(Solver):
             'green': int(getattr(flags, 'green_risk_class', flags.risk_class)),
         }
         alpha, crc_alpha = float(flags.alpha), float(flags.crc_alpha)
+        crc_alpha_by_head = {
+            'red': float(getattr(flags, 'red_crc_alpha', crc_alpha)),
+            'green': float(getattr(flags, 'green_crc_alpha', crc_alpha)),
+        }
         total_shapes = len(self.test_loader)
         cal_num = int(math.ceil(total_shapes * float(flags.calibration_ratio)))
         cal_num = min(max(cal_num, 1), total_shapes - 1)
@@ -535,8 +539,10 @@ class SegSolver(Solver):
             'green': self._conformal_quantile(calibration_scores['green'], alpha),
         }
         crc_qhat = {
-            'red': self._conformal_quantile(crc_scores['red'], crc_alpha),
-            'green': self._conformal_quantile(crc_scores['green'], crc_alpha),
+            'red': self._conformal_quantile(
+                crc_scores['red'], crc_alpha_by_head['red']),
+            'green': self._conformal_quantile(
+                crc_scores['green'], crc_alpha_by_head['green']),
         }
         crc_threshold = {
             'red': 1.0 - crc_qhat['red'],
@@ -614,6 +620,7 @@ class SegSolver(Solver):
             'mc_samples': int(flags.mc_samples),
             'alpha': alpha,
             'crc_alpha': crc_alpha,
+            'crc_alpha_by_head': crc_alpha_by_head,
             'risk_class_by_head': risk_class_by_head,
             'qhat': qhat,
             'crc_qhat': crc_qhat,

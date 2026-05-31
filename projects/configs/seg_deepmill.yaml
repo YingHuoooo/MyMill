@@ -92,6 +92,8 @@ CALIB:
   mc_samples: 8
   alpha: 0.1
   crc_alpha: 0.05
+  red_crc_alpha: 0.03
+  green_crc_alpha: 0.05
   calibration_ratio: 0.2
   split_mode: random
   split_seed: 123

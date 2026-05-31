@@ -34,6 +34,8 @@ parser.add_argument('--seed', type=int, default=123)
 parser.add_argument('--mc-samples', type=int, default=8)
 parser.add_argument('--alpha', type=float, default=0.1)
 parser.add_argument('--crc-alpha', type=float, default=0.05)
+parser.add_argument('--red-crc-alpha', type=float, default=0.03)
+parser.add_argument('--green-crc-alpha', type=float, default=0.05)
 parser.add_argument('--calibration-ratio', type=float, default=0.2)
 parser.add_argument('--split-mode', type=str, default='random',
                     choices=['random', 'prefix'])
@@ -76,6 +78,8 @@ cmds = [
     'CALIB.mc_samples {}'.format(args.mc_samples),
     'CALIB.alpha {}'.format(args.alpha),
     'CALIB.crc_alpha {}'.format(args.crc_alpha),
+    'CALIB.red_crc_alpha {}'.format(args.red_crc_alpha),
+    'CALIB.green_crc_alpha {}'.format(args.green_crc_alpha),
     'CALIB.calibration_ratio {}'.format(args.calibration_ratio),
     'CALIB.split_mode {}'.format(args.split_mode),
     'CALIB.split_seed {}'.format(args.split_seed),

@@ -120,6 +120,8 @@ _C.CALIB = CN(new_allowed=True)
 _C.CALIB.mc_samples         = 8           # MC dropout forward passes
 _C.CALIB.alpha              = 0.1         # CP miscoverage level
 _C.CALIB.crc_alpha          = 0.05        # CRC false-negative risk level
+_C.CALIB.red_crc_alpha      = 0.03        # CRC risk level for red head
+_C.CALIB.green_crc_alpha    = 0.05        # CRC risk level for green head
 _C.CALIB.calibration_ratio  = 0.2         # First split used for calibration
 _C.CALIB.split_mode         = 'random'    # random or prefix split
 _C.CALIB.split_seed         = 123         # Seed for random split
