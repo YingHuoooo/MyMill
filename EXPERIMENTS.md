@@ -1,5 +1,8 @@
 # DeepMill Improvement Experiments
 
+For the current research direction and method roadmap, see
+[`RISK_AWARE_ROADMAP.md`](RISK_AWARE_ROADMAP.md).
+
 ## Baselines
 
 - `concat`: original DeepMill tool conditioning. Each decoder scale receives a 256-dimensional tool feature that is expanded to octree nodes and concatenated with geometry features.
