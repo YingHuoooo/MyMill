@@ -380,6 +380,20 @@ class SegSolver(Solver):
         with open(json_path, 'w') as fid:
             json.dump(results, fid, indent=2)
 
+        split_path = os.path.join(self.logdir, 'mc_cp_crc_split.json')
+        split_data = {
+            'split_mode': results['split_mode'],
+            'split_seed': results['split_seed'],
+            'calibration_indices': results['calibration_indices'],
+            'test_indices': results['test_indices'],
+            'calibration_filenames': [
+                shape_rows[i]['filename'] for i in results['calibration_indices']],
+            'test_filenames': [
+                shape_rows[i]['filename'] for i in results['test_indices']],
+        }
+        with open(split_path, 'w') as fid:
+            json.dump(split_data, fid, indent=2)
+
         summary_path = os.path.join(self.logdir, 'mc_cp_crc_summary.csv')
         with open(summary_path, 'w', newline='') as fid:
             writer = csv.writer(fid)
@@ -395,6 +409,7 @@ class SegSolver(Solver):
             writer.writerows(shape_rows)
 
         tqdm.write('=> Saved MC-CP+CRC results to: %s' % json_path)
+        tqdm.write('=> Saved MC-CP+CRC split to: %s' % split_path)
         tqdm.write('=> Saved MC-CP+CRC summary to: %s' % summary_path)
         tqdm.write('=> Saved MC-CP+CRC per-shape data to: %s' % shapes_path)
 
@@ -421,6 +436,19 @@ class SegSolver(Solver):
         total_shapes = len(self.test_loader)
         cal_num = int(math.ceil(total_shapes * float(flags.calibration_ratio)))
         cal_num = min(max(cal_num, 1), total_shapes - 1)
+        split_mode = str(getattr(flags, 'split_mode', 'random')).lower()
+        split_seed = int(getattr(flags, 'split_seed', self.FLAGS.SOLVER.rand_seed))
+        if split_mode == 'prefix':
+            calibration_indices = list(range(cal_num))
+        elif split_mode == 'random':
+            rng = np.random.RandomState(split_seed)
+            calibration_indices = sorted(
+                rng.permutation(total_shapes)[:cal_num].tolist())
+        else:
+            raise ValueError('Unsupported CALIB.split_mode: %s' % split_mode)
+        calibration_index_set = set(calibration_indices)
+        test_indices = [idx for idx in range(total_shapes)
+                        if idx not in calibration_index_set]
 
         calibration_scores = {'red': [], 'green': []}
         crc_scores = {'red': [], 'green': []}
@@ -440,7 +468,7 @@ class SegSolver(Solver):
             batch['iter_num'] = it
             batch['epoch'] = 0
             outputs = self._collect_mc_outputs(batch)
-            split = 'calibration' if it < cal_num else 'test'
+            split = 'calibration' if it in calibration_index_set else 'test'
 
             label_1, label_2 = outputs['label_1'], outputs['label_2']
             mc_prob_1, mc_prob_2 = outputs['mc_prob_1'], outputs['mc_prob_2']
@@ -520,7 +548,7 @@ class SegSolver(Solver):
         for it in tqdm(range(total_shapes), ncols=80, leave=False,
                        disable=self.disable_tqdm):
             batch = next(self.test_iter)
-            if it < cal_num:
+            if it in calibration_index_set:
                 continue
             batch['iter_num'] = it
             batch['epoch'] = 0
@@ -579,6 +607,10 @@ class SegSolver(Solver):
             'total_shapes': total_shapes,
             'calibration_shapes': cal_num,
             'test_shapes': eval_num,
+            'split_mode': split_mode,
+            'split_seed': split_seed,
+            'calibration_indices': calibration_indices,
+            'test_indices': test_indices,
             'mc_samples': int(flags.mc_samples),
             'alpha': alpha,
             'crc_alpha': crc_alpha,

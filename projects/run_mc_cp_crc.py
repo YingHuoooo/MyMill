@@ -35,6 +35,9 @@ parser.add_argument('--mc-samples', type=int, default=8)
 parser.add_argument('--alpha', type=float, default=0.1)
 parser.add_argument('--crc-alpha', type=float, default=0.05)
 parser.add_argument('--calibration-ratio', type=float, default=0.2)
+parser.add_argument('--split-mode', type=str, default='random',
+                    choices=['random', 'prefix'])
+parser.add_argument('--split-seed', type=int, default=-1)
 parser.add_argument('--risk-class', type=int, default=1)
 parser.add_argument('--red-risk-class', type=int, default=0)
 parser.add_argument('--green-risk-class', type=int, default=1)
@@ -43,6 +46,8 @@ parser.add_argument('--save-point-npz', action='store_true')
 args = parser.parse_args()
 if args.model.lower() == 'unet' and args.depth < 5:
   raise ValueError('UNet requires --depth >= 5.')
+if args.split_seed < 0:
+  args.split_seed = args.seed
 
 data = 'data'
 cat = 'models'
@@ -72,6 +77,8 @@ cmds = [
     'CALIB.alpha {}'.format(args.alpha),
     'CALIB.crc_alpha {}'.format(args.crc_alpha),
     'CALIB.calibration_ratio {}'.format(args.calibration_ratio),
+    'CALIB.split_mode {}'.format(args.split_mode),
+    'CALIB.split_seed {}'.format(args.split_seed),
     'CALIB.risk_class {}'.format(args.risk_class),
     'CALIB.red_risk_class {}'.format(args.red_risk_class),
     'CALIB.green_risk_class {}'.format(args.green_risk_class),

@@ -57,26 +57,28 @@ experiment log directory.
 
 ```bash
 cd projects
-python run_mc_cp_crc.py --alias mccp_crc_author --ckpt ../pretrained/00840solver/00840.solver.tar --seed 123 --mc-samples 8 --alpha 0.1 --crc-alpha 0.05 --calibration-ratio 0.2 --red-risk-class 0 --green-risk-class 1
+python run_mc_cp_crc.py --alias mccp_crc_author --ckpt ../pretrained/00840solver/00840.solver.tar --seed 123 --split-mode random --split-seed 123 --mc-samples 8 --alpha 0.1 --crc-alpha 0.05 --calibration-ratio 0.2 --red-risk-class 0 --green-risk-class 1
 ```
 
 Saved files:
 
 - `mc_cp_crc_results.json`: full configuration, thresholds, and metrics.
+- `mc_cp_crc_split.json`: reproducible calibration/test indices and filenames.
 - `mc_cp_crc_summary.csv`: flat metric table for copying into reports.
 - `mc_cp_crc_shapes.csv`: per-shape split and metrics.
 
 CRC uses separate risk classes for the two prediction heads. For the current
-DeepMill labels, red controls class `0` and green controls class `1`. CP sets
-also use a top-1 fallback when the conformal threshold would otherwise create
-an empty prediction set; the fallback rate is recorded in the summary.
+DeepMill labels, red controls class `0` and green controls class `1`. The
+calibration split is randomized with `--split-seed` and saved to disk. CP sets
+also use a top-1 fallback when the conformal threshold would otherwise create an
+empty prediction set; the fallback rate is recorded in the summary.
 
 To compare against the FiLM branch, keep the same calibration settings and
 change only the checkpoint/model options:
 
 ```bash
 cd projects
-python run_mc_cp_crc.py --alias mccp_crc_film_skip --conditioning film_skip --film-scale 0.1 --ckpt ../pretrained/00840solver/00840.solver.tar --strict-load false --seed 123 --mc-samples 8 --alpha 0.1 --crc-alpha 0.05 --calibration-ratio 0.2 --red-risk-class 0 --green-risk-class 1
+python run_mc_cp_crc.py --alias mccp_crc_film_skip --conditioning film_skip --film-scale 0.1 --ckpt ../pretrained/00840solver/00840.solver.tar --strict-load false --seed 123 --split-mode random --split-seed 123 --mc-samples 8 --alpha 0.1 --crc-alpha 0.05 --calibration-ratio 0.2 --red-risk-class 0 --green-risk-class 1
 ```
 
 ## FiLM Fine-Tuning
