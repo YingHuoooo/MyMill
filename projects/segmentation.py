@@ -6,6 +6,9 @@
 # --------------------------------------------------------
 
 import os
+import csv
+import json
+import math
 import torch
 import ocnn
 import numpy as np
@@ -153,8 +156,12 @@ class SegSolver(Solver):
         pred_1 = logit_1.argmax(dim=-1)  # 假设 logit_1 是 logits 形式，需要用 argmax 选取预测类别
         pred_2 = logit_2.argmax(dim=-1)
         # 这里使用 f1_score 函数，假设 label 和 label_2 都是 0 和 1 的整数标签
-        f1_score_1 = f1_score(label.cpu().numpy(), pred_1.cpu().numpy(), average='binary')
-        f1_score_2 = f1_score(label_2.cpu().numpy(), pred_2.cpu().numpy(), average='binary')
+        f1_score_1 = f1_score(
+            label.cpu().numpy(), pred_1.cpu().numpy(),
+            average='binary', zero_division=0)
+        f1_score_2 = f1_score(
+            label_2.cpu().numpy(), pred_2.cpu().numpy(),
+            average='binary', zero_division=0)
         f1_score_avg = (f1_score_1 + f1_score_2) / 2
 
         return {'train/loss': loss, 'train/accu': accu, 'train/accu_red': accu_1, 'train/accu_green': accu_2,
@@ -202,8 +209,12 @@ class SegSolver(Solver):
         pred_1 = logit_1.argmax(dim=-1)
         pred_2 = logit_2.argmax(dim=-1)
         # 这里使用 f1_score 函数，假设 label 和 label_2 都是 0 和 1 的整数标签
-        f1_score_1 = f1_score(label.cpu().numpy(), pred_1.cpu().numpy(), average='binary')
-        f1_score_2 = f1_score(label_2.cpu().numpy(), pred_2.cpu().numpy(), average='binary')
+        f1_score_1 = f1_score(
+            label.cpu().numpy(), pred_1.cpu().numpy(),
+            average='binary', zero_division=0)
+        f1_score_2 = f1_score(
+            label_2.cpu().numpy(), pred_2.cpu().numpy(),
+            average='binary', zero_division=0)
         f1_score_avg = (f1_score_1 + f1_score_2) / 2
 
         names = ['test/loss', 'test/accu', 'test/accu_red','test/accu_green','test/mIoU', 'test/f1_red','test/f1_green','test/f1_avg'] + \
@@ -213,6 +224,359 @@ class SegSolver(Solver):
                    torch.tensor(f1_score_2, dtype=torch.float32).cuda(),
                    torch.tensor(f1_score_avg, dtype=torch.float32).cuda()] + insc + union
         return dict(zip(names, tensors))
+
+    def _enable_mc_dropout(self):
+        self.model.eval()
+        for module in self.model.modules():
+            if isinstance(module, torch.nn.Dropout):
+                module.train()
+
+    @staticmethod
+    def _conformal_quantile(scores, alpha):
+        scores = np.asarray(scores, dtype=np.float64)
+        if scores.size == 0:
+            return 1.0
+        rank = int(math.ceil((scores.size + 1) * (1.0 - alpha)))
+        rank = min(max(rank, 1), scores.size)
+        return float(np.sort(scores)[rank - 1])
+
+    @staticmethod
+    def _safe_float(value):
+        if isinstance(value, torch.Tensor):
+            value = value.detach().cpu().item()
+        return float(value)
+
+    def _head_metrics_from_pred(self, pred, label, class_num):
+        pred = pred.detach()
+        label = label.detach().long()
+        accu = pred.eq(label).float().mean().item()
+        f1 = f1_score(
+            label.cpu().numpy(), pred.cpu().numpy(),
+            average='binary', zero_division=0)
+
+        intsc, union = [], []
+        miou, valid_part_num, eps = 0.0, 0.0, 1.0e-10
+        for k in range(class_num):
+            pk, lk = pred.eq(k), label.eq(k)
+            intsc_k = torch.sum(torch.logical_and(pk, lk).float()).item()
+            union_k = torch.sum(torch.logical_or(pk, lk).float()).item()
+            intsc.append(intsc_k)
+            union.append(union_k)
+            valid = bool(lk.any().item())
+            valid_part_num += float(valid)
+            if valid:
+                miou += intsc_k / (union_k + eps)
+        miou /= valid_part_num + eps
+        return {'accu': accu, 'f1': float(f1), 'mIoU': miou,
+                'intsc': intsc, 'union': union}
+
+    def _head_metrics_from_prob(self, prob, label, class_num):
+        return self._head_metrics_from_pred(prob.argmax(dim=1), label, class_num)
+
+    def _crc_pred(self, prob, risk_class, threshold):
+        other_class = 1 - risk_class
+        pred = torch.full(
+            (prob.shape[0],), other_class, dtype=torch.long, device=prob.device)
+        pred[prob[:, risk_class] >= threshold] = risk_class
+        return pred
+
+    def _risk_stats(self, pred, label, risk_class):
+        label = label.long()
+        risk_mask = label.eq(risk_class)
+        pred_risk = pred.eq(risk_class)
+        risk_total = int(risk_mask.sum().item())
+        false_negative = int(torch.logical_and(risk_mask, ~pred_risk).sum().item())
+        predicted_risk = int(pred_risk.sum().item())
+        total = int(label.numel())
+        fn_rate = false_negative / max(risk_total, 1)
+        return {
+            'risk_total': risk_total,
+            'false_negative': false_negative,
+            'fn_rate': fn_rate,
+            'predicted_risk': predicted_risk,
+            'predicted_risk_rate': predicted_risk / max(total, 1),
+        }
+
+    def _collect_mc_outputs(self, batch):
+        mc_samples = max(1, int(self.FLAGS.CALIB.mc_samples))
+        batch = self.process_batch(batch, self.FLAGS.DATA.test)
+
+        self.model.eval()
+        with torch.no_grad():
+            logit_1, logit_2, label, label_2 = self.model_forward(batch)
+            baseline_prob_1 = torch.nn.functional.softmax(logit_1, dim=1)
+            baseline_prob_2 = torch.nn.functional.softmax(logit_2, dim=1)
+
+        probs_1, probs_2 = [], []
+        if mc_samples > 1:
+            self._enable_mc_dropout()
+        with torch.no_grad():
+            for _ in range(mc_samples):
+                mc_logit_1, mc_logit_2, _, _ = self.model_forward(batch)
+                probs_1.append(torch.nn.functional.softmax(mc_logit_1, dim=1))
+                probs_2.append(torch.nn.functional.softmax(mc_logit_2, dim=1))
+        self.model.eval()
+
+        mc_prob_1 = torch.stack(probs_1, dim=0).mean(dim=0)
+        mc_prob_2 = torch.stack(probs_2, dim=0).mean(dim=0)
+        mc_var_1 = torch.stack(probs_1, dim=0).var(dim=0, unbiased=False).mean(dim=1)
+        mc_var_2 = torch.stack(probs_2, dim=0).var(dim=0, unbiased=False).mean(dim=1)
+        return {
+            'filename': batch['filename'][0],
+            'label_1': label.long(),
+            'label_2': label_2.long(),
+            'baseline_prob_1': baseline_prob_1,
+            'baseline_prob_2': baseline_prob_2,
+            'mc_prob_1': mc_prob_1,
+            'mc_prob_2': mc_prob_2,
+            'mc_var_1': mc_var_1,
+            'mc_var_2': mc_var_2,
+        }
+
+    def _append_head_summary(self, summary, prefix, metrics, risk=None):
+        summary[prefix + '/accu'] = metrics['accu']
+        summary[prefix + '/f1'] = metrics['f1']
+        summary[prefix + '/mIoU'] = metrics['mIoU']
+        if risk is not None:
+            for key, value in risk.items():
+                summary[prefix + '/' + key] = value
+
+    def _prediction_set_stats(self, prob, label, qhat):
+        pred_set = prob >= (1.0 - qhat)
+        label = label.long()
+        covered = pred_set[torch.arange(label.numel(), device=label.device), label]
+        set_size = pred_set.float().sum(dim=1)
+        empty = set_size.eq(0)
+        return pred_set, {
+            'coverage': covered.float().mean().item(),
+            'avg_set_size': set_size.mean().item(),
+            'singleton_rate': set_size.eq(1).float().mean().item(),
+            'empty_rate': empty.float().mean().item(),
+        }
+
+    def _write_mc_cp_crc_outputs(self, results, shape_rows):
+        os.makedirs(self.logdir, exist_ok=True)
+        json_path = os.path.join(self.logdir, 'mc_cp_crc_results.json')
+        with open(json_path, 'w') as fid:
+            json.dump(results, fid, indent=2)
+
+        summary_path = os.path.join(self.logdir, 'mc_cp_crc_summary.csv')
+        with open(summary_path, 'w', newline='') as fid:
+            writer = csv.writer(fid)
+            writer.writerow(['metric', 'value'])
+            for key in sorted(results['metrics']):
+                writer.writerow([key, results['metrics'][key]])
+
+        shapes_path = os.path.join(self.logdir, 'mc_cp_crc_shapes.csv')
+        fieldnames = sorted({key for row in shape_rows for key in row.keys()})
+        with open(shapes_path, 'w', newline='') as fid:
+            writer = csv.DictWriter(fid, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(shape_rows)
+
+        tqdm.write('=> Saved MC-CP+CRC results to: %s' % json_path)
+        tqdm.write('=> Saved MC-CP+CRC summary to: %s' % summary_path)
+        tqdm.write('=> Saved MC-CP+CRC per-shape data to: %s' % shapes_path)
+
+    def mccp_crc(self):
+        self.manual_seed()
+        self.config_model()
+        self.configure_log(set_writer=False)
+
+        self.FLAGS.defrost()
+        self.FLAGS.DATA.test.shuffle = False
+        self.FLAGS.freeze()
+
+        self.config_dataloader(disable_train_data=True)
+        self.load_checkpoint()
+        self.model.eval()
+
+        flags = self.FLAGS.CALIB
+        class_num = self.FLAGS.LOSS.num_class
+        risk_class = int(flags.risk_class)
+        alpha, crc_alpha = float(flags.alpha), float(flags.crc_alpha)
+        total_shapes = len(self.test_loader)
+        cal_num = int(math.ceil(total_shapes * float(flags.calibration_ratio)))
+        cal_num = min(max(cal_num, 1), total_shapes - 1)
+
+        calibration_scores = {'red': [], 'green': []}
+        crc_scores = {'red': [], 'green': []}
+        accum = {}
+        shape_rows = []
+
+        def update_average(key, value):
+            accum[key] = accum.get(key, 0.0) + float(value)
+
+        point_dir = os.path.join(self.logdir, 'mc_cp_crc_points')
+        if flags.save_point_npz:
+            os.makedirs(point_dir, exist_ok=True)
+
+        for it in tqdm(range(total_shapes), ncols=80, leave=False,
+                       disable=self.disable_tqdm):
+            batch = next(self.test_iter)
+            batch['iter_num'] = it
+            batch['epoch'] = 0
+            outputs = self._collect_mc_outputs(batch)
+            split = 'calibration' if it < cal_num else 'test'
+
+            label_1, label_2 = outputs['label_1'], outputs['label_2']
+            mc_prob_1, mc_prob_2 = outputs['mc_prob_1'], outputs['mc_prob_2']
+            base_prob_1 = outputs['baseline_prob_1']
+            base_prob_2 = outputs['baseline_prob_2']
+
+            row = {'filename': outputs['filename'], 'split': split,
+                   'num_points': int(label_1.numel())}
+            for name, prob, label in [
+                    ('red', base_prob_1, label_1),
+                    ('green', base_prob_2, label_2)]:
+                metrics = self._head_metrics_from_prob(prob, label, class_num)
+                self._append_head_summary(row, 'baseline_' + name, metrics)
+                for key, value in metrics.items():
+                    if key not in ('intsc', 'union'):
+                        update_average('baseline_all_' + name + '/' + key, value)
+                if split == 'test':
+                    for key, value in metrics.items():
+                        if key not in ('intsc', 'union'):
+                            update_average('baseline_' + name + '/' + key, value)
+
+            for name, prob, label in [
+                    ('red', mc_prob_1, label_1),
+                    ('green', mc_prob_2, label_2)]:
+                true_prob = prob[torch.arange(label.numel(), device=label.device),
+                                 label.long()]
+                if split == 'calibration':
+                    calibration_scores[name].extend((1.0 - true_prob).cpu().tolist())
+                    risk_mask = label.long().eq(risk_class)
+                    if risk_mask.any():
+                        risk_scores = 1.0 - prob[risk_mask, risk_class]
+                        crc_scores[name].extend(risk_scores.cpu().tolist())
+                metrics = self._head_metrics_from_prob(prob, label, class_num)
+                self._append_head_summary(row, 'mc_' + name, metrics)
+                row['mc_' + name + '/uncertainty'] = prob.var(dim=1).mean().item()
+                row['mc_' + name + '/dropout_var'] = (
+                    outputs['mc_var_1'] if name == 'red' else outputs['mc_var_2']
+                ).mean().item()
+                for key, value in metrics.items():
+                    if key not in ('intsc', 'union'):
+                        update_average('mc_all_' + name + '/' + key, value)
+                if split == 'test':
+                    for key, value in metrics.items():
+                        if key not in ('intsc', 'union'):
+                            update_average('mc_' + name + '/' + key, value)
+
+            shape_rows.append(row)
+
+            if flags.save_point_npz:
+                safe_name = outputs['filename'].replace('/', '_').replace('\\', '_')
+                np.savez_compressed(
+                    os.path.join(point_dir, '%05d_%s.npz' % (it, safe_name)),
+                    split=split,
+                    label_red=label_1.cpu().numpy(),
+                    label_green=label_2.cpu().numpy(),
+                    baseline_prob_red=base_prob_1.cpu().numpy(),
+                    baseline_prob_green=base_prob_2.cpu().numpy(),
+                    mc_prob_red=mc_prob_1.cpu().numpy(),
+                    mc_prob_green=mc_prob_2.cpu().numpy())
+
+        qhat = {
+            'red': self._conformal_quantile(calibration_scores['red'], alpha),
+            'green': self._conformal_quantile(calibration_scores['green'], alpha),
+        }
+        crc_qhat = {
+            'red': self._conformal_quantile(crc_scores['red'], crc_alpha),
+            'green': self._conformal_quantile(crc_scores['green'], crc_alpha),
+        }
+        crc_threshold = {
+            'red': 1.0 - crc_qhat['red'],
+            'green': 1.0 - crc_qhat['green'],
+        }
+
+        # Re-run the test split once so CP/CRC metrics use calibrated thresholds.
+        self.test_iter = iter(self.test_loader)
+        for it in tqdm(range(total_shapes), ncols=80, leave=False,
+                       disable=self.disable_tqdm):
+            batch = next(self.test_iter)
+            if it < cal_num:
+                continue
+            batch['iter_num'] = it
+            batch['epoch'] = 0
+            outputs = self._collect_mc_outputs(batch)
+
+            for name, prob, label in [
+                    ('red', outputs['mc_prob_1'], outputs['label_1']),
+                    ('green', outputs['mc_prob_2'], outputs['label_2'])]:
+                _, set_stats = self._prediction_set_stats(prob, label, qhat[name])
+                for key, value in set_stats.items():
+                    update_average('cp_' + name + '/' + key, value)
+
+                pred_crc = self._crc_pred(prob, risk_class, crc_threshold[name])
+                metrics = self._head_metrics_from_pred(pred_crc, label, class_num)
+                risk = self._risk_stats(pred_crc, label, risk_class)
+                for key, value in metrics.items():
+                    if key not in ('intsc', 'union'):
+                        update_average('crc_' + name + '/' + key, value)
+                for key, value in risk.items():
+                    update_average('crc_' + name + '/' + key, value)
+
+        eval_num = total_shapes - cal_num
+        averaged_metrics = {}
+        for key, value in accum.items():
+            divisor = total_shapes if key.startswith(('baseline_all_', 'mc_all_')) \
+                else eval_num
+            averaged_metrics[key] = value / divisor
+        averaged_metrics['baseline_all/accu'] = (
+            averaged_metrics['baseline_all_red/accu'] +
+            averaged_metrics['baseline_all_green/accu']) / 2.0
+        averaged_metrics['baseline_all/f1_avg'] = (
+            averaged_metrics['baseline_all_red/f1'] +
+            averaged_metrics['baseline_all_green/f1']) / 2.0
+        averaged_metrics['mc_all/accu'] = (
+            averaged_metrics['mc_all_red/accu'] +
+            averaged_metrics['mc_all_green/accu']) / 2.0
+        averaged_metrics['mc_all/f1_avg'] = (
+            averaged_metrics['mc_all_red/f1'] +
+            averaged_metrics['mc_all_green/f1']) / 2.0
+        averaged_metrics['baseline/accu'] = (
+            averaged_metrics['baseline_red/accu'] +
+            averaged_metrics['baseline_green/accu']) / 2.0
+        averaged_metrics['baseline/f1_avg'] = (
+            averaged_metrics['baseline_red/f1'] +
+            averaged_metrics['baseline_green/f1']) / 2.0
+        averaged_metrics['mc/accu'] = (
+            averaged_metrics['mc_red/accu'] +
+            averaged_metrics['mc_green/accu']) / 2.0
+        averaged_metrics['mc/f1_avg'] = (
+            averaged_metrics['mc_red/f1'] +
+            averaged_metrics['mc_green/f1']) / 2.0
+        averaged_metrics['crc/accu'] = (
+            averaged_metrics['crc_red/accu'] +
+            averaged_metrics['crc_green/accu']) / 2.0
+        averaged_metrics['crc/f1_avg'] = (
+            averaged_metrics['crc_red/f1'] +
+            averaged_metrics['crc_green/f1']) / 2.0
+
+        results = {
+            'checkpoint': self.FLAGS.SOLVER.ckpt,
+            'logdir': self.logdir,
+            'total_shapes': total_shapes,
+            'calibration_shapes': cal_num,
+            'test_shapes': eval_num,
+            'mc_samples': int(flags.mc_samples),
+            'alpha': alpha,
+            'crc_alpha': crc_alpha,
+            'risk_class': risk_class,
+            'qhat': qhat,
+            'crc_qhat': crc_qhat,
+            'crc_threshold': crc_threshold,
+            'metrics': averaged_metrics,
+        }
+        self._write_mc_cp_crc_outputs(results, shape_rows)
+
+        tqdm.write('=> MC-CP+CRC baseline f1_avg: %.4f, mc f1_avg: %.4f, '
+                   'crc f1_avg: %.4f' % (
+                       averaged_metrics['baseline/f1_avg'],
+                       averaged_metrics['mc/f1_avg'],
+                       averaged_metrics['crc/f1_avg']))
 
 
     def eval_step(self, batch):

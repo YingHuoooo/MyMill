@@ -115,6 +115,15 @@ _C.LOSS.name                = ''          # The name of the loss
 _C.LOSS.num_class           = 40          # The class number for the cross-entropy loss
 _C.LOSS.label_smoothing     = 0.0         # The factor of label smoothing
 
+# MC conformal prediction / CRC evaluation parameters
+_C.CALIB = CN(new_allowed=True)
+_C.CALIB.mc_samples         = 8           # MC dropout forward passes
+_C.CALIB.alpha              = 0.1         # CP miscoverage level
+_C.CALIB.crc_alpha          = 0.05        # CRC false-negative risk level
+_C.CALIB.calibration_ratio  = 0.2         # First split used for calibration
+_C.CALIB.risk_class         = 1           # Class whose false negatives are controlled
+_C.CALIB.save_point_npz     = False       # Save per-point probabilities and sets
+
 
 # backup the commands
 _C.SYS = CN(new_allowed=True)

@@ -48,6 +48,32 @@ to decide whether an idea is promising enough for a full run.
 - `CRC`: calibrate decision thresholds on a held-out calibration split to control false negative risk for inaccessible and occluded point labels.
 - `MC-CP + CRC`: use Monte Carlo dropout to estimate predictive uncertainty, then use conformal calibration to produce risk-controlled prediction sets.
 
+## MC-CP + CRC Evaluation
+
+Use the author checkpoint as the main backbone for MC-CP + CRC. The script
+stores the original checkpoint argmax metrics, MC-dropout argmax metrics,
+conformal prediction metrics, CRC metrics, and per-shape records under the
+experiment log directory.
+
+```bash
+cd projects
+python run_mc_cp_crc.py --alias mccp_crc_author --ckpt ../pretrained/00840solver/00840.solver.tar --seed 123 --mc-samples 8 --alpha 0.1 --crc-alpha 0.05 --calibration-ratio 0.2
+```
+
+Saved files:
+
+- `mc_cp_crc_results.json`: full configuration, thresholds, and metrics.
+- `mc_cp_crc_summary.csv`: flat metric table for copying into reports.
+- `mc_cp_crc_shapes.csv`: per-shape split and metrics.
+
+To compare against the FiLM branch, keep the same calibration settings and
+change only the checkpoint/model options:
+
+```bash
+cd projects
+python run_mc_cp_crc.py --alias mccp_crc_film_skip --conditioning film_skip --film-scale 0.1 --ckpt ../pretrained/00840solver/00840.solver.tar --strict-load false --seed 123 --mc-samples 8 --alpha 0.1 --crc-alpha 0.05 --calibration-ratio 0.2
+```
+
 ## FiLM Fine-Tuning
 
 Initialize FiLM from the author checkpoint while skipping the newly introduced

@@ -87,3 +87,11 @@ MODEL:
 LOSS:
   mask: -1
   num_class: 2
+
+CALIB:
+  mc_samples: 8
+  alpha: 0.1
+  crc_alpha: 0.05
+  calibration_ratio: 0.2
+  risk_class: 1
+  save_point_npz: False
