@@ -95,6 +95,9 @@ CALIB:
   crc_alpha: 0.05
   red_crc_alpha: 0.03
   green_crc_alpha: 0.05
+  adaptive_crc: False
+  adaptive_crc_bins: 2
+  adaptive_crc_score: entropy
   calibration_ratio: 0.2
   split_mode: random
   split_seed: 123

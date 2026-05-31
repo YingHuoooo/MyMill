@@ -70,6 +70,16 @@ cd projects
 python run_mc_cp_crc.py --alias mccp_crc_author_aps --ckpt ../pretrained/00840solver/00840.solver.tar --seed 123 --split-mode random --split-seed 123 --mc-samples 8 --cp-method aps --alpha 0.1 --crc-alpha 0.05 --red-crc-alpha 0.03 --green-crc-alpha 0.05 --calibration-ratio 0.2 --red-risk-class 0 --green-risk-class 1
 ```
 
+Adaptive CRC:
+
+```bash
+cd projects
+python run_mc_cp_crc.py --alias adaptive_crc_entropy_b2 --ckpt ../pretrained/00840solver/00840.solver.tar --seed 123 --split-mode random --split-seed 123 --mc-samples 1 --cp-method threshold --alpha 0.1 --crc-alpha 0.05 --red-crc-alpha 0.03 --green-crc-alpha 0.05 --adaptive-crc --adaptive-crc-bins 2 --adaptive-crc-score entropy --calibration-ratio 0.2 --red-risk-class 0 --green-risk-class 1
+```
+
+Adaptive CRC saves both the global CRC metrics (`crc_*`) and the binned
+threshold metrics (`adaptive_crc_*`) in the same output files.
+
 Saved files:
 
 - `mc_cp_crc_results.json`: full configuration, thresholds, and metrics.

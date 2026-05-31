@@ -433,18 +433,75 @@ class SegSolver(Solver):
                              crc_threshold, risk_class, class_num, cp_method):
         _, set_stats = self._cp_prediction_set_stats(
             prob, label, qhat, cp_method, risk_class)
-        pred_crc = self._crc_pred(prob, risk_class, crc_threshold)
-        metrics = self._head_metrics_from_pred(pred_crc, label, class_num)
-        risk = self._risk_stats(pred_crc, label, risk_class)
         output = {}
         for key, value in set_stats.items():
             output['cp_' + name + '/' + key] = value
+        output.update(self._crc_eval_one(
+            'crc_' + name, prob, label, crc_threshold, risk_class, class_num))
+        return output
+
+    def _crc_eval_one(self, prefix, prob, label, threshold, risk_class, class_num):
+        pred_crc = self._crc_pred(prob, risk_class, threshold)
+        metrics = self._head_metrics_from_pred(pred_crc, label, class_num)
+        risk = self._risk_stats(pred_crc, label, risk_class)
+        output = {}
         for key, value in metrics.items():
             if key not in ('intsc', 'union'):
-                output['crc_' + name + '/' + key] = value
+                output[prefix + '/' + key] = value
         for key, value in risk.items():
-            output['crc_' + name + '/' + key] = value
+            output[prefix + '/' + key] = value
         return output
+
+    def _shape_difficulty(self, prob, score_name):
+        prob = prob.detach()
+        if score_name == 'entropy':
+            entropy = -(prob * torch.log(prob.clamp_min(1.0e-8))).sum(dim=1)
+            return entropy.mean().item()
+        if score_name == 'confidence':
+            return (1.0 - prob.max(dim=1)[0]).mean().item()
+        if score_name == 'margin':
+            sorted_prob, _ = torch.sort(prob, dim=1, descending=True)
+            return (1.0 - (sorted_prob[:, 0] - sorted_prob[:, 1])).mean().item()
+        raise ValueError('Unsupported CALIB.adaptive_crc_score: %s' % score_name)
+
+    @staticmethod
+    def _difficulty_edges(values, bin_num):
+        values = np.asarray(values, dtype=np.float64)
+        if values.size == 0 or bin_num <= 1:
+            return []
+        quantiles = [i / float(bin_num) for i in range(1, bin_num)]
+        return [float(edge) for edge in np.quantile(values, quantiles)]
+
+    @staticmethod
+    def _difficulty_bin(value, edges):
+        bin_id = 0
+        for edge in edges:
+            if value > edge:
+                bin_id += 1
+        return bin_id
+
+    def _build_adaptive_crc(self, adaptive_records, alpha_by_head):
+        adaptive = {'edges': {}, 'qhat': {}, 'threshold': {}}
+        for name, records in adaptive_records.items():
+            difficulties = [record['difficulty'] for record in records]
+            edges = self._difficulty_edges(
+                difficulties, int(self.FLAGS.CALIB.adaptive_crc_bins))
+            bin_scores = {i: [] for i in range(len(edges) + 1)}
+            for record in records:
+                bin_id = self._difficulty_bin(record['difficulty'], edges)
+                bin_scores[bin_id].extend(record['scores'])
+            all_scores = [score for record in records for score in record['scores']]
+            fallback_qhat = self._conformal_quantile(
+                all_scores, alpha_by_head[name])
+            adaptive['edges'][name] = edges
+            adaptive['qhat'][name] = {}
+            adaptive['threshold'][name] = {}
+            for bin_id, scores in bin_scores.items():
+                qhat = self._conformal_quantile(
+                    scores, alpha_by_head[name]) if scores else fallback_qhat
+                adaptive['qhat'][name][str(bin_id)] = qhat
+                adaptive['threshold'][name][str(bin_id)] = 1.0 - qhat
+        return adaptive
 
     def _write_mc_cp_crc_outputs(self, results, shape_rows):
         os.makedirs(self.logdir, exist_ok=True)
@@ -512,6 +569,9 @@ class SegSolver(Solver):
             'red': float(getattr(flags, 'red_crc_alpha', crc_alpha)),
             'green': float(getattr(flags, 'green_crc_alpha', crc_alpha)),
         }
+        adaptive_crc = bool(getattr(flags, 'adaptive_crc', False))
+        adaptive_crc_score = str(
+            getattr(flags, 'adaptive_crc_score', 'entropy')).lower()
         total_shapes = len(self.test_loader)
         cal_num = int(math.ceil(total_shapes * float(flags.calibration_ratio)))
         cal_num = min(max(cal_num, 1), total_shapes - 1)
@@ -531,11 +591,18 @@ class SegSolver(Solver):
 
         calibration_scores = {'red': [], 'green': []}
         crc_scores = {'red': [], 'green': []}
+        adaptive_crc_records = {'red': [], 'green': []}
         accum = {}
+        accum_count = {}
         shape_rows = []
 
         def update_average(key, value):
+            if value is None:
+                return
+            if isinstance(value, float) and math.isnan(value):
+                return
             accum[key] = accum.get(key, 0.0) + float(value)
+            accum_count[key] = accum_count.get(key, 0) + 1
 
         point_dir = os.path.join(self.logdir, 'mc_cp_crc_points')
         if flags.save_point_npz:
@@ -577,9 +644,16 @@ class SegSolver(Solver):
                     calibration_scores[name].extend(cp_scores.cpu().tolist())
                     risk_class = risk_class_by_head[name]
                     risk_mask = label.long().eq(risk_class)
+                    difficulty = self._shape_difficulty(prob, adaptive_crc_score)
+                    row['difficulty_' + name] = difficulty
                     if risk_mask.any():
                         risk_scores = 1.0 - prob[risk_mask, risk_class]
                         crc_scores[name].extend(risk_scores.cpu().tolist())
+                        adaptive_crc_records[name].append({
+                            'index': it,
+                            'difficulty': difficulty,
+                            'scores': risk_scores.cpu().tolist(),
+                        })
                 metrics = self._head_metrics_from_prob(prob, label, class_num)
                 self._append_head_summary(row, 'mc_' + name, metrics)
                 row['mc_' + name + '/uncertainty'] = prob.var(dim=1).mean().item()
@@ -622,6 +696,10 @@ class SegSolver(Solver):
             'red': 1.0 - crc_qhat['red'],
             'green': 1.0 - crc_qhat['green'],
         }
+        adaptive_crc_info = None
+        if adaptive_crc:
+            adaptive_crc_info = self._build_adaptive_crc(
+                adaptive_crc_records, crc_alpha_by_head)
 
         # Re-run the test split once so CP/CRC metrics use calibrated thresholds.
         self.test_iter = iter(self.test_loader)
@@ -637,18 +715,35 @@ class SegSolver(Solver):
             for name, prob, label in [
                     ('red', outputs['mc_prob_1'], outputs['label_1']),
                     ('green', outputs['mc_prob_2'], outputs['label_2'])]:
+                difficulty = self._shape_difficulty(prob, adaptive_crc_score)
+                shape_rows[it]['difficulty_' + name] = difficulty
                 eval_metrics = self._calibrated_eval_one(
                     name, prob, label, qhat[name], crc_threshold[name],
                     risk_class_by_head[name], class_num, cp_method)
                 shape_rows[it].update(eval_metrics)
                 for key, value in eval_metrics.items():
                     update_average(key, value)
+                if adaptive_crc:
+                    edges = adaptive_crc_info['edges'][name]
+                    bin_id = self._difficulty_bin(difficulty, edges)
+                    threshold = adaptive_crc_info['threshold'][name][str(bin_id)]
+                    adaptive_metrics = self._crc_eval_one(
+                        'adaptive_crc_' + name, prob, label, threshold,
+                        risk_class_by_head[name], class_num)
+                    adaptive_metrics['adaptive_crc_' + name + '/bin'] = bin_id
+                    adaptive_metrics[
+                        'adaptive_crc_' + name + '/threshold'] = threshold
+                    shape_rows[it].update(adaptive_metrics)
+                    for key, value in adaptive_metrics.items():
+                        update_average(key, value)
 
         eval_num = total_shapes - cal_num
         averaged_metrics = {}
         for key, value in accum.items():
-            divisor = total_shapes if key.startswith(('baseline_all_', 'mc_all_')) \
-                else eval_num
+            divisor = accum_count.get(key, None)
+            if not divisor:
+                divisor = total_shapes if key.startswith(('baseline_all_', 'mc_all_')) \
+                    else eval_num
             averaged_metrics[key] = value / divisor
         averaged_metrics['baseline_all/accu'] = (
             averaged_metrics['baseline_all_red/accu'] +
@@ -680,6 +775,13 @@ class SegSolver(Solver):
         averaged_metrics['crc/f1_avg'] = (
             averaged_metrics['crc_red/f1'] +
             averaged_metrics['crc_green/f1']) / 2.0
+        if adaptive_crc:
+            averaged_metrics['adaptive_crc/accu'] = (
+                averaged_metrics['adaptive_crc_red/accu'] +
+                averaged_metrics['adaptive_crc_green/accu']) / 2.0
+            averaged_metrics['adaptive_crc/f1_avg'] = (
+                averaged_metrics['adaptive_crc_red/f1'] +
+                averaged_metrics['adaptive_crc_green/f1']) / 2.0
 
         results = {
             'checkpoint': self.FLAGS.SOLVER.ckpt,
@@ -696,6 +798,10 @@ class SegSolver(Solver):
             'cp_method': cp_method,
             'crc_alpha': crc_alpha,
             'crc_alpha_by_head': crc_alpha_by_head,
+            'adaptive_crc': adaptive_crc,
+            'adaptive_crc_score': adaptive_crc_score,
+            'adaptive_crc_bins': int(getattr(flags, 'adaptive_crc_bins', 2)),
+            'adaptive_crc_info': adaptive_crc_info,
             'risk_class_by_head': risk_class_by_head,
             'qhat': qhat,
             'crc_qhat': crc_qhat,
@@ -704,11 +810,14 @@ class SegSolver(Solver):
         }
         self._write_mc_cp_crc_outputs(results, shape_rows)
 
-        tqdm.write('=> MC-CP+CRC baseline f1_avg: %.4f, mc f1_avg: %.4f, '
-                   'crc f1_avg: %.4f' % (
-                       averaged_metrics['baseline/f1_avg'],
-                       averaged_metrics['mc/f1_avg'],
-                       averaged_metrics['crc/f1_avg']))
+        msg = '=> MC-CP+CRC baseline f1_avg: %.4f, mc f1_avg: %.4f, crc f1_avg: %.4f' % (
+            averaged_metrics['baseline/f1_avg'],
+            averaged_metrics['mc/f1_avg'],
+            averaged_metrics['crc/f1_avg'])
+        if adaptive_crc:
+            msg += ', adaptive_crc f1_avg: %.4f' % (
+                averaged_metrics['adaptive_crc/f1_avg'])
+        tqdm.write(msg)
 
 
     def eval_step(self, batch):

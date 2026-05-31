@@ -38,6 +38,10 @@ parser.add_argument('--cp-method', type=str, default='threshold',
 parser.add_argument('--crc-alpha', type=float, default=0.05)
 parser.add_argument('--red-crc-alpha', type=float, default=0.03)
 parser.add_argument('--green-crc-alpha', type=float, default=0.05)
+parser.add_argument('--adaptive-crc', action='store_true')
+parser.add_argument('--adaptive-crc-bins', type=int, default=2)
+parser.add_argument('--adaptive-crc-score', type=str, default='entropy',
+                    choices=['entropy', 'confidence', 'margin'])
 parser.add_argument('--calibration-ratio', type=float, default=0.2)
 parser.add_argument('--split-mode', type=str, default='random',
                     choices=['random', 'prefix'])
@@ -83,6 +87,9 @@ cmds = [
     'CALIB.crc_alpha {}'.format(args.crc_alpha),
     'CALIB.red_crc_alpha {}'.format(args.red_crc_alpha),
     'CALIB.green_crc_alpha {}'.format(args.green_crc_alpha),
+    'CALIB.adaptive_crc {}'.format(args.adaptive_crc),
+    'CALIB.adaptive_crc_bins {}'.format(args.adaptive_crc_bins),
+    'CALIB.adaptive_crc_score {}'.format(args.adaptive_crc_score),
     'CALIB.calibration_ratio {}'.format(args.calibration_ratio),
     'CALIB.split_mode {}'.format(args.split_mode),
     'CALIB.split_seed {}'.format(args.split_seed),
