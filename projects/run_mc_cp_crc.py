@@ -36,6 +36,8 @@ parser.add_argument('--alpha', type=float, default=0.1)
 parser.add_argument('--crc-alpha', type=float, default=0.05)
 parser.add_argument('--calibration-ratio', type=float, default=0.2)
 parser.add_argument('--risk-class', type=int, default=1)
+parser.add_argument('--red-risk-class', type=int, default=0)
+parser.add_argument('--green-risk-class', type=int, default=1)
 parser.add_argument('--save-point-npz', action='store_true')
 
 args = parser.parse_args()
@@ -71,6 +73,8 @@ cmds = [
     'CALIB.crc_alpha {}'.format(args.crc_alpha),
     'CALIB.calibration_ratio {}'.format(args.calibration_ratio),
     'CALIB.risk_class {}'.format(args.risk_class),
+    'CALIB.red_risk_class {}'.format(args.red_risk_class),
+    'CALIB.green_risk_class {}'.format(args.green_risk_class),
     'CALIB.save_point_npz {}'.format(args.save_point_npz),
 ]
 

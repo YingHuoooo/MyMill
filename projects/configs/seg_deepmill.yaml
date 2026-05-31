@@ -94,4 +94,6 @@ CALIB:
   crc_alpha: 0.05
   calibration_ratio: 0.2
   risk_class: 1
+  red_risk_class: 0
+  green_risk_class: 1
   save_point_npz: False

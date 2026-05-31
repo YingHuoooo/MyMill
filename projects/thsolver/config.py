@@ -121,7 +121,9 @@ _C.CALIB.mc_samples         = 8           # MC dropout forward passes
 _C.CALIB.alpha              = 0.1         # CP miscoverage level
 _C.CALIB.crc_alpha          = 0.05        # CRC false-negative risk level
 _C.CALIB.calibration_ratio  = 0.2         # First split used for calibration
-_C.CALIB.risk_class         = 1           # Class whose false negatives are controlled
+_C.CALIB.risk_class         = 1           # Backward-compatible fallback
+_C.CALIB.red_risk_class     = 0           # Risk class controlled for red head
+_C.CALIB.green_risk_class   = 1           # Risk class controlled for green head
 _C.CALIB.save_point_npz     = False       # Save per-point probabilities and sets
 
 

@@ -343,16 +343,36 @@ class SegSolver(Solver):
 
     def _prediction_set_stats(self, prob, label, qhat):
         pred_set = prob >= (1.0 - qhat)
+        empty = pred_set.sum(dim=1).eq(0)
+        if empty.any():
+            top1 = prob.argmax(dim=1)
+            pred_set[empty, top1[empty]] = True
         label = label.long()
         covered = pred_set[torch.arange(label.numel(), device=label.device), label]
         set_size = pred_set.float().sum(dim=1)
-        empty = set_size.eq(0)
         return pred_set, {
             'coverage': covered.float().mean().item(),
             'avg_set_size': set_size.mean().item(),
             'singleton_rate': set_size.eq(1).float().mean().item(),
-            'empty_rate': empty.float().mean().item(),
+            'empty_rate': 0.0,
+            'top1_fallback_rate': empty.float().mean().item(),
         }
+
+    def _calibrated_eval_one(self, name, prob, label, qhat,
+                             crc_threshold, risk_class, class_num):
+        _, set_stats = self._prediction_set_stats(prob, label, qhat)
+        pred_crc = self._crc_pred(prob, risk_class, crc_threshold)
+        metrics = self._head_metrics_from_pred(pred_crc, label, class_num)
+        risk = self._risk_stats(pred_crc, label, risk_class)
+        output = {}
+        for key, value in set_stats.items():
+            output['cp_' + name + '/' + key] = value
+        for key, value in metrics.items():
+            if key not in ('intsc', 'union'):
+                output['crc_' + name + '/' + key] = value
+        for key, value in risk.items():
+            output['crc_' + name + '/' + key] = value
+        return output
 
     def _write_mc_cp_crc_outputs(self, results, shape_rows):
         os.makedirs(self.logdir, exist_ok=True)
@@ -393,7 +413,10 @@ class SegSolver(Solver):
 
         flags = self.FLAGS.CALIB
         class_num = self.FLAGS.LOSS.num_class
-        risk_class = int(flags.risk_class)
+        risk_class_by_head = {
+            'red': int(getattr(flags, 'red_risk_class', flags.risk_class)),
+            'green': int(getattr(flags, 'green_risk_class', flags.risk_class)),
+        }
         alpha, crc_alpha = float(flags.alpha), float(flags.crc_alpha)
         total_shapes = len(self.test_loader)
         cal_num = int(math.ceil(total_shapes * float(flags.calibration_ratio)))
@@ -446,6 +469,7 @@ class SegSolver(Solver):
                                  label.long()]
                 if split == 'calibration':
                     calibration_scores[name].extend((1.0 - true_prob).cpu().tolist())
+                    risk_class = risk_class_by_head[name]
                     risk_mask = label.long().eq(risk_class)
                     if risk_mask.any():
                         risk_scores = 1.0 - prob[risk_mask, risk_class]
@@ -505,18 +529,12 @@ class SegSolver(Solver):
             for name, prob, label in [
                     ('red', outputs['mc_prob_1'], outputs['label_1']),
                     ('green', outputs['mc_prob_2'], outputs['label_2'])]:
-                _, set_stats = self._prediction_set_stats(prob, label, qhat[name])
-                for key, value in set_stats.items():
-                    update_average('cp_' + name + '/' + key, value)
-
-                pred_crc = self._crc_pred(prob, risk_class, crc_threshold[name])
-                metrics = self._head_metrics_from_pred(pred_crc, label, class_num)
-                risk = self._risk_stats(pred_crc, label, risk_class)
-                for key, value in metrics.items():
-                    if key not in ('intsc', 'union'):
-                        update_average('crc_' + name + '/' + key, value)
-                for key, value in risk.items():
-                    update_average('crc_' + name + '/' + key, value)
+                eval_metrics = self._calibrated_eval_one(
+                    name, prob, label, qhat[name], crc_threshold[name],
+                    risk_class_by_head[name], class_num)
+                shape_rows[it].update(eval_metrics)
+                for key, value in eval_metrics.items():
+                    update_average(key, value)
 
         eval_num = total_shapes - cal_num
         averaged_metrics = {}
@@ -564,7 +582,7 @@ class SegSolver(Solver):
             'mc_samples': int(flags.mc_samples),
             'alpha': alpha,
             'crc_alpha': crc_alpha,
-            'risk_class': risk_class,
+            'risk_class_by_head': risk_class_by_head,
             'qhat': qhat,
             'crc_qhat': crc_qhat,
             'crc_threshold': crc_threshold,
