@@ -27,6 +27,7 @@ class ToolConditionMLP(torch.nn.Module):
     def forward(self, tool_params: torch.Tensor) -> torch.Tensor:
         return self.net(tool_params)
 
+
 class UNet(torch.nn.Module):
     r''' Octree-based UNet for segmentation.
     '''
@@ -40,6 +41,12 @@ class UNet(torch.nn.Module):
         self.nempty = nempty
         self.conditioning = conditioning.lower()
         self.film_scale = film_scale
+        self.use_decoder_film = self.conditioning in ('film', 'film_both')
+        self.use_skip_film = self.conditioning in ('film_skip', 'film_both')
+        supported_conditioning = ('concat', 'film', 'film_skip', 'film_both')
+        if self.conditioning not in supported_conditioning:
+            raise ValueError('Unsupported conditioning: %s' % conditioning)
+
         self.config_network()
         self.encoder_stages = len(self.encoder_blocks)
         self.decoder_stages = len(self.decoder_blocks)
@@ -60,10 +67,9 @@ class UNet(torch.nn.Module):
         channel = [self.decoder_channel[i+1] + self.encoder_channel[-i-2]
                    for i in range(self.decoder_stages)]
         channel = [c + 256 for c in channel]
-        if self.conditioning == 'film':
-            condition_channels = [2 * c for c in self.decoder_channel[1:]]
-        elif self.conditioning != 'concat':
-            raise ValueError('Unsupported conditioning: %s' % conditioning)
+        decoder_condition_channels = [2 * c for c in self.decoder_channel[1:]]
+        skip_condition_channels = [2 * self.encoder_channel[-i-2]
+                                   for i in range(self.decoder_stages)]
 
         self.upsample = torch.nn.ModuleList([ocnn.modules.OctreeDeconvBnRelu(
             self.decoder_channel[i], self.decoder_channel[i+1], kernel_size=[2],
@@ -124,9 +130,13 @@ class UNet(torch.nn.Module):
             torch.nn.Dropout(0.3),
         )
 
-        if self.conditioning == 'film':
+        if self.use_decoder_film:
             self.film_conditioners = torch.nn.ModuleList([
-                ToolConditionMLP(c) for c in condition_channels
+                ToolConditionMLP(c) for c in decoder_condition_channels
+            ])
+        if self.use_skip_film:
+            self.skip_film_conditioners = torch.nn.ModuleList([
+                ToolConditionMLP(c) for c in skip_condition_channels
             ])
 
     def config_network(self):
@@ -151,8 +161,15 @@ class UNet(torch.nn.Module):
             convd[d-1] = self.encoder[i](conv, octree, d-1)
         return convd
 
+    def apply_film(self, feature: torch.Tensor, condition: torch.Tensor,
+                   counts) -> torch.Tensor:
+        expanded_condition = expand_batch_features(condition, counts)
+        gamma, beta = torch.chunk(expanded_condition, 2, dim=1)
+        return feature * (1.0 + self.film_scale * gamma) + self.film_scale * beta
+
     def unet_decoder(self, convd: Dict[int, torch.Tensor], octree: Octree,
-                     depth: int, tool_features, film_conditions=None):
+                     depth: int, tool_features, decoder_film_conditions=None,
+                     skip_film_conditions=None):
         r''' The decoder of the U-Net.
         '''
         deconv = convd[depth]
@@ -161,16 +178,17 @@ class UNet(torch.nn.Module):
             deconv = self.upsample[i](deconv, octree, d)
 
             copy_counts = octree.batch_nnum[i + 2]
-            if film_conditions is not None:
-                expanded_film = expand_batch_features(film_conditions[i], copy_counts)
-                gamma, beta = torch.chunk(expanded_film, 2, dim=1)
-                deconv = deconv * (1.0 + self.film_scale * gamma) + \
-                    self.film_scale * beta
+            if decoder_film_conditions is not None:
+                deconv = self.apply_film(
+                    deconv, decoder_film_conditions[i], copy_counts)
 
             expanded_tool_features = expand_batch_features(tool_features[i], copy_counts)
             deconv = torch.cat([expanded_tool_features, deconv], dim=1)
 
-            deconv = torch.cat([convd[d+1], deconv], dim=1)  # skip connections
+            skip = convd[d+1]
+            if skip_film_conditions is not None:
+                skip = self.apply_film(skip, skip_film_conditions[i], copy_counts)
+            deconv = torch.cat([skip, deconv], dim=1)  # skip connections
             deconv = self.decoder[i](deconv, octree, d+1)
         return deconv
 
@@ -187,14 +205,18 @@ class UNet(torch.nn.Module):
             self.fc_module_3(tool_params),
             self.fc_module_4(tool_params),
         ]
-        film_conditions = None
-        if self.conditioning == 'film':
-            film_conditions = [conditioner(tool_params)
-                               for conditioner in self.film_conditioners]
+        decoder_film_conditions = None
+        if self.use_decoder_film:
+            decoder_film_conditions = [conditioner(tool_params)
+                                       for conditioner in self.film_conditioners]
+        skip_film_conditions = None
+        if self.use_skip_film:
+            skip_film_conditions = [conditioner(tool_params)
+                                    for conditioner in self.skip_film_conditioners]
 
         deconv = self.unet_decoder(
             convd, octree, depth - self.encoder_stages, tool_features,
-            film_conditions)
+            decoder_film_conditions, skip_film_conditions)
 
         interp_depth = depth - self.encoder_stages + self.decoder_stages
         # print(f"deconv shape: {deconv.shape}")
@@ -206,4 +228,4 @@ class UNet(torch.nn.Module):
         # print(f"query_pts batch size: {query_pts.shape[0]}")
         logits_1 = self.header(feature)
         logits_2 = self.header_2(feature)
-        return logits_1,logits_2
+        return logits_1, logits_2

@@ -73,7 +73,7 @@ DATA:
 
 MODEL:
   name: segnet
-  conditioning: concat  # concat -> original tool-feature concatenation; film -> FiLM modulation
+  conditioning: concat  # concat, film, film_skip, or film_both
   film_scale: 1.0
   feature: ND   # N -> Normal(3 channels);
                 # D -> Local displacement(1 channel)

@@ -4,6 +4,8 @@
 
 - `concat`: original DeepMill tool conditioning. Each decoder scale receives a 256-dimensional tool feature that is expanded to octree nodes and concatenated with geometry features.
 - `film`: experimental FiLM conditioning. Each decoder scale receives tool-conditioned affine parameters and modulates decoder features with `feature * (1 + gamma) + beta`.
+- `film_skip`: modulates the U-Net skip features before concatenating them into the decoder.
+- `film_both`: applies both decoder FiLM and skip FiLM.
 
 ## Run Examples
 
@@ -19,6 +21,13 @@ FiLM ablation run:
 ```bash
 cd projects
 python run_seg_deepmill.py --depth 5 --model unet --conditioning film --alias unet_d5_film
+```
+
+Skip-FiLM ablation run:
+
+```bash
+cd projects
+python run_seg_deepmill.py --depth 5 --model unet --conditioning film_skip --alias unet_d5_film_skip
 ```
 
 Fast trend check before full training:
@@ -47,6 +56,21 @@ FiLM parameters:
 ```bash
 cd projects
 python run_seg_deepmill.py --depth 5 --model unet --conditioning film --film-scale 0.1 --alias film_ft_from_840 --ratios 1.0 --max-epoch 100 --test-every-epoch 10 --ckpt ../pretrained/00840solver/00840.solver.tar --strict-load false --resume-optimizer false --reset-epoch --lr 0.00001 --trainable-keywords film_conditioners
+```
+
+Skip-FiLM fine-tuning keeps the author model fixed and trains only the new
+skip conditioners:
+
+```bash
+cd projects
+python run_seg_deepmill.py --depth 5 --model unet --conditioning film_skip --film-scale 0.1 --alias film_skip_ft_s01 --ratios 1.0 --max-epoch 150 --test-every-epoch 10 --ckpt ../pretrained/00840solver/00840.solver.tar --strict-load false --resume-optimizer false --reset-epoch --lr 0.00001 --trainable-keywords skip_film_conditioners
+```
+
+Combined decoder + skip FiLM:
+
+```bash
+cd projects
+python run_seg_deepmill.py --depth 5 --model unet --conditioning film_both --film-scale 0.1 --alias film_both_ft_s01 --ratios 1.0 --max-epoch 150 --test-every-epoch 10 --ckpt ../pretrained/00840solver/00840.solver.tar --strict-load false --resume-optimizer false --reset-epoch --lr 0.00001 --trainable-keywords film_conditioners,skip_film_conditioners
 ```
 
 ## Suggested Metrics

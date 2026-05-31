@@ -28,7 +28,7 @@ parser.add_argument('--gpu', type=str, default='0')
 parser.add_argument('--depth', type=int, default=5)
 parser.add_argument('--model', type=str, default='unet')
 parser.add_argument('--conditioning', type=str, default='concat',
-                    choices=['concat', 'film'])
+                    choices=['concat', 'film', 'film_skip', 'film_both'])
 parser.add_argument('--film-scale', type=float, default=1.0,
                     help='Residual scale for FiLM modulation.')
 parser.add_argument('--mode', type=str, default='randinit')
