@@ -101,6 +101,10 @@ CALIB:
   crc_alpha: 0.05
   red_crc_alpha: 0.03
   green_crc_alpha: 0.05
+  temperature_scaling: False
+  temperature_min: 0.5
+  temperature_max: 5.0
+  temperature_steps: 91
   adaptive_crc: False
   adaptive_crc_bins: 2
   adaptive_crc_score: entropy

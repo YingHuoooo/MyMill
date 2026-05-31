@@ -273,6 +273,35 @@ class SegSolver(Solver):
     def _head_metrics_from_prob(self, prob, label, class_num):
         return self._head_metrics_from_pred(prob.argmax(dim=1), label, class_num)
 
+    def _calibration_metrics_from_prob(self, prob, label, class_num,
+                                       ece_bins=15):
+        label = label.detach().long()
+        prob = prob.detach().clamp_min(1.0e-8)
+        nll = torch.nn.functional.nll_loss(prob.log(), label).item()
+        target = torch.zeros_like(prob)
+        target.scatter_(1, label.view(-1, 1), 1.0)
+        brier = torch.sum((prob - target) ** 2, dim=1).mean().item()
+
+        confidence, pred = prob.max(dim=1)
+        correct = pred.eq(label).float()
+        ece = 0.0
+        boundaries = torch.linspace(
+            0.0, 1.0, int(ece_bins) + 1, device=prob.device)
+        for i in range(int(ece_bins)):
+            lower, upper = boundaries[i], boundaries[i + 1]
+            if i == 0:
+                in_bin = torch.logical_and(confidence >= lower,
+                                           confidence <= upper)
+            else:
+                in_bin = torch.logical_and(confidence > lower,
+                                           confidence <= upper)
+            if in_bin.any():
+                bin_weight = in_bin.float().mean().item()
+                bin_acc = correct[in_bin].mean().item()
+                bin_conf = confidence[in_bin].mean().item()
+                ece += bin_weight * abs(bin_acc - bin_conf)
+        return {'nll': nll, 'brier': brier, 'ece': ece}
+
     def _crc_pred(self, prob, risk_class, threshold):
         other_class = 1 - risk_class
         pred = torch.full(
@@ -325,6 +354,8 @@ class SegSolver(Solver):
             'filename': batch['filename'][0],
             'label_1': label.long(),
             'label_2': label_2.long(),
+            'baseline_logit_1': logit_1,
+            'baseline_logit_2': logit_2,
             'baseline_prob_1': baseline_prob_1,
             'baseline_prob_2': baseline_prob_2,
             'mc_prob_1': mc_prob_1,
@@ -332,6 +363,34 @@ class SegSolver(Solver):
             'mc_var_1': mc_var_1,
             'mc_var_2': mc_var_2,
         }
+
+    @staticmethod
+    def _temperature_scaled_prob(logit, temperature):
+        temperature = max(float(temperature), 1.0e-6)
+        return torch.nn.functional.softmax(logit / temperature, dim=1)
+
+    @staticmethod
+    def _fit_temperature_grid(logits, labels, min_temperature,
+                              max_temperature, steps):
+        if not logits:
+            return 1.0
+        logits = torch.cat(logits, dim=0).float()
+        labels = torch.cat(labels, dim=0).long()
+        min_temperature = float(min_temperature)
+        max_temperature = float(max_temperature)
+        steps = max(2, int(steps))
+        if max_temperature < min_temperature:
+            min_temperature, max_temperature = max_temperature, min_temperature
+
+        best_temperature, best_loss = 1.0, float('inf')
+        for temperature in np.linspace(min_temperature, max_temperature, steps):
+            with torch.no_grad():
+                loss = torch.nn.functional.cross_entropy(
+                    logits / float(temperature), labels).item()
+            if loss < best_loss:
+                best_loss = loss
+                best_temperature = float(temperature)
+        return best_temperature
 
     def _append_head_summary(self, summary, prefix, metrics, risk=None):
         summary[prefix + '/accu'] = metrics['accu']
@@ -569,6 +628,11 @@ class SegSolver(Solver):
             'red': float(getattr(flags, 'red_crc_alpha', crc_alpha)),
             'green': float(getattr(flags, 'green_crc_alpha', crc_alpha)),
         }
+        temperature_scaling = bool(getattr(flags, 'temperature_scaling', False))
+        temperature_min = float(getattr(flags, 'temperature_min', 0.5))
+        temperature_max = float(getattr(flags, 'temperature_max', 5.0))
+        temperature_steps = int(getattr(flags, 'temperature_steps', 91))
+        temperature_by_head = {'red': 1.0, 'green': 1.0}
         adaptive_crc = bool(getattr(flags, 'adaptive_crc', False))
         adaptive_crc_score = str(
             getattr(flags, 'adaptive_crc_score', 'entropy')).lower()
@@ -592,6 +656,7 @@ class SegSolver(Solver):
         calibration_scores = {'red': [], 'green': []}
         crc_scores = {'red': [], 'green': []}
         adaptive_crc_records = {'red': [], 'green': []}
+        temperature_records = {'red': [], 'green': []}
         accum = {}
         accum_count = {}
         shape_rows = []
@@ -628,34 +693,57 @@ class SegSolver(Solver):
                     ('green', base_prob_2, label_2)]:
                 metrics = self._head_metrics_from_prob(prob, label, class_num)
                 self._append_head_summary(row, 'baseline_' + name, metrics)
+                calib_metrics = self._calibration_metrics_from_prob(
+                    prob, label, class_num)
+                for key, value in calib_metrics.items():
+                    row['baseline_' + name + '/' + key] = value
                 for key, value in metrics.items():
                     if key not in ('intsc', 'union'):
                         update_average('baseline_all_' + name + '/' + key, value)
+                for key, value in calib_metrics.items():
+                    update_average('baseline_all_' + name + '/' + key, value)
                 if split == 'test':
                     for key, value in metrics.items():
                         if key not in ('intsc', 'union'):
                             update_average('baseline_' + name + '/' + key, value)
+                    for key, value in calib_metrics.items():
+                        update_average('baseline_' + name + '/' + key, value)
 
             for name, prob, label in [
                     ('red', mc_prob_1, label_1),
                     ('green', mc_prob_2, label_2)]:
                 if split == 'calibration':
-                    cp_scores = self._cp_scores(prob, label, cp_method)
-                    calibration_scores[name].extend(cp_scores.cpu().tolist())
-                    risk_class = risk_class_by_head[name]
-                    risk_mask = label.long().eq(risk_class)
-                    difficulty = self._shape_difficulty(prob, adaptive_crc_score)
-                    row['difficulty_' + name] = difficulty
-                    if risk_mask.any():
-                        risk_scores = 1.0 - prob[risk_mask, risk_class]
-                        crc_scores[name].extend(risk_scores.cpu().tolist())
-                        adaptive_crc_records[name].append({
+                    if temperature_scaling:
+                        logit = outputs[
+                            'baseline_logit_1' if name == 'red'
+                            else 'baseline_logit_2']
+                        temperature_records[name].append({
                             'index': it,
-                            'difficulty': difficulty,
-                            'scores': risk_scores.cpu().tolist(),
+                            'logit': logit.detach().cpu(),
+                            'label': label.detach().cpu(),
                         })
+                    else:
+                        cp_scores = self._cp_scores(prob, label, cp_method)
+                        calibration_scores[name].extend(cp_scores.cpu().tolist())
+                        risk_class = risk_class_by_head[name]
+                        risk_mask = label.long().eq(risk_class)
+                        difficulty = self._shape_difficulty(
+                            prob, adaptive_crc_score)
+                        row['difficulty_' + name] = difficulty
+                        if risk_mask.any():
+                            risk_scores = 1.0 - prob[risk_mask, risk_class]
+                            crc_scores[name].extend(risk_scores.cpu().tolist())
+                            adaptive_crc_records[name].append({
+                                'index': it,
+                                'difficulty': difficulty,
+                                'scores': risk_scores.cpu().tolist(),
+                            })
                 metrics = self._head_metrics_from_prob(prob, label, class_num)
                 self._append_head_summary(row, 'mc_' + name, metrics)
+                calib_metrics = self._calibration_metrics_from_prob(
+                    prob, label, class_num)
+                for key, value in calib_metrics.items():
+                    row['mc_' + name + '/' + key] = value
                 row['mc_' + name + '/uncertainty'] = prob.var(dim=1).mean().item()
                 row['mc_' + name + '/dropout_var'] = (
                     outputs['mc_var_1'] if name == 'red' else outputs['mc_var_2']
@@ -663,10 +751,14 @@ class SegSolver(Solver):
                 for key, value in metrics.items():
                     if key not in ('intsc', 'union'):
                         update_average('mc_all_' + name + '/' + key, value)
+                for key, value in calib_metrics.items():
+                    update_average('mc_all_' + name + '/' + key, value)
                 if split == 'test':
                     for key, value in metrics.items():
                         if key not in ('intsc', 'union'):
                             update_average('mc_' + name + '/' + key, value)
+                    for key, value in calib_metrics.items():
+                        update_average('mc_' + name + '/' + key, value)
 
             shape_rows.append(row)
 
@@ -681,6 +773,34 @@ class SegSolver(Solver):
                     baseline_prob_green=base_prob_2.cpu().numpy(),
                     mc_prob_red=mc_prob_1.cpu().numpy(),
                     mc_prob_green=mc_prob_2.cpu().numpy())
+
+        if temperature_scaling:
+            for name, records in temperature_records.items():
+                temperature_by_head[name] = self._fit_temperature_grid(
+                    [record['logit'] for record in records],
+                    [record['label'] for record in records],
+                    temperature_min, temperature_max, temperature_steps)
+                for record in records:
+                    prob = self._temperature_scaled_prob(
+                        record['logit'], temperature_by_head[name])
+                    label = record['label']
+                    cp_scores = self._cp_scores(prob, label, cp_method)
+                    calibration_scores[name].extend(cp_scores.cpu().tolist())
+                    risk_class = risk_class_by_head[name]
+                    risk_mask = label.long().eq(risk_class)
+                    difficulty = self._shape_difficulty(
+                        prob, adaptive_crc_score)
+                    shape_rows[record['index']]['difficulty_' + name] = difficulty
+                    shape_rows[record['index']][
+                        'temperature_' + name] = temperature_by_head[name]
+                    if risk_mask.any():
+                        risk_scores = 1.0 - prob[risk_mask, risk_class]
+                        crc_scores[name].extend(risk_scores.cpu().tolist())
+                        adaptive_crc_records[name].append({
+                            'index': record['index'],
+                            'difficulty': difficulty,
+                            'scores': risk_scores.cpu().tolist(),
+                        })
 
         qhat = {
             'red': self._conformal_quantile(calibration_scores['red'], alpha),
@@ -712,9 +832,28 @@ class SegSolver(Solver):
             batch['epoch'] = 0
             outputs = self._collect_mc_outputs(batch)
 
-            for name, prob, label in [
-                    ('red', outputs['mc_prob_1'], outputs['label_1']),
-                    ('green', outputs['mc_prob_2'], outputs['label_2'])]:
+            for name, prob, label, logit in [
+                    ('red', outputs['mc_prob_1'], outputs['label_1'],
+                     outputs['baseline_logit_1']),
+                    ('green', outputs['mc_prob_2'], outputs['label_2'],
+                     outputs['baseline_logit_2'])]:
+                if temperature_scaling:
+                    prob = self._temperature_scaled_prob(
+                        logit, temperature_by_head[name])
+                    shape_rows[it]['temperature_' + name] = \
+                        temperature_by_head[name]
+                    temp_metrics = self._head_metrics_from_prob(
+                        prob, label, class_num)
+                    self._append_head_summary(
+                        shape_rows[it], 'temp_' + name, temp_metrics)
+                    temp_calib_metrics = self._calibration_metrics_from_prob(
+                        prob, label, class_num)
+                    for key, value in temp_metrics.items():
+                        if key not in ('intsc', 'union'):
+                            update_average('temp_' + name + '/' + key, value)
+                    for key, value in temp_calib_metrics.items():
+                        shape_rows[it]['temp_' + name + '/' + key] = value
+                        update_average('temp_' + name + '/' + key, value)
                 difficulty = self._shape_difficulty(prob, adaptive_crc_score)
                 shape_rows[it]['difficulty_' + name] = difficulty
                 eval_metrics = self._calibrated_eval_one(
@@ -763,12 +902,20 @@ class SegSolver(Solver):
         averaged_metrics['baseline/f1_avg'] = (
             averaged_metrics['baseline_red/f1'] +
             averaged_metrics['baseline_green/f1']) / 2.0
+        for metric_name in ('nll', 'brier', 'ece'):
+            averaged_metrics['baseline/' + metric_name] = (
+                averaged_metrics['baseline_red/' + metric_name] +
+                averaged_metrics['baseline_green/' + metric_name]) / 2.0
         averaged_metrics['mc/accu'] = (
             averaged_metrics['mc_red/accu'] +
             averaged_metrics['mc_green/accu']) / 2.0
         averaged_metrics['mc/f1_avg'] = (
             averaged_metrics['mc_red/f1'] +
             averaged_metrics['mc_green/f1']) / 2.0
+        for metric_name in ('nll', 'brier', 'ece'):
+            averaged_metrics['mc/' + metric_name] = (
+                averaged_metrics['mc_red/' + metric_name] +
+                averaged_metrics['mc_green/' + metric_name]) / 2.0
         averaged_metrics['crc/accu'] = (
             averaged_metrics['crc_red/accu'] +
             averaged_metrics['crc_green/accu']) / 2.0
@@ -782,6 +929,19 @@ class SegSolver(Solver):
             averaged_metrics['adaptive_crc/f1_avg'] = (
                 averaged_metrics['adaptive_crc_red/f1'] +
                 averaged_metrics['adaptive_crc_green/f1']) / 2.0
+        if temperature_scaling:
+            averaged_metrics['temperature/red'] = temperature_by_head['red']
+            averaged_metrics['temperature/green'] = temperature_by_head['green']
+            averaged_metrics['temp/accu'] = (
+                averaged_metrics['temp_red/accu'] +
+                averaged_metrics['temp_green/accu']) / 2.0
+            averaged_metrics['temp/f1_avg'] = (
+                averaged_metrics['temp_red/f1'] +
+                averaged_metrics['temp_green/f1']) / 2.0
+            for metric_name in ('nll', 'brier', 'ece'):
+                averaged_metrics['temp/' + metric_name] = (
+                    averaged_metrics['temp_red/' + metric_name] +
+                    averaged_metrics['temp_green/' + metric_name]) / 2.0
 
         results = {
             'checkpoint': self.FLAGS.SOLVER.ckpt,
@@ -798,6 +958,11 @@ class SegSolver(Solver):
             'cp_method': cp_method,
             'crc_alpha': crc_alpha,
             'crc_alpha_by_head': crc_alpha_by_head,
+            'temperature_scaling': temperature_scaling,
+            'temperature_min': temperature_min,
+            'temperature_max': temperature_max,
+            'temperature_steps': temperature_steps,
+            'temperature_by_head': temperature_by_head,
             'adaptive_crc': adaptive_crc,
             'adaptive_crc_score': adaptive_crc_score,
             'adaptive_crc_bins': int(getattr(flags, 'adaptive_crc_bins', 2)),
@@ -817,6 +982,9 @@ class SegSolver(Solver):
         if adaptive_crc:
             msg += ', adaptive_crc f1_avg: %.4f' % (
                 averaged_metrics['adaptive_crc/f1_avg'])
+        if temperature_scaling:
+            msg += ', T(red): %.3f, T(green): %.3f' % (
+                temperature_by_head['red'], temperature_by_head['green'])
         tqdm.write(msg)
 
 
