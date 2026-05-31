@@ -33,6 +33,8 @@ parser.add_argument('--test-take', type=int, default=-1)
 parser.add_argument('--seed', type=int, default=123)
 parser.add_argument('--mc-samples', type=int, default=8)
 parser.add_argument('--alpha', type=float, default=0.1)
+parser.add_argument('--cp-method', type=str, default='threshold',
+                    choices=['threshold', 'aps'])
 parser.add_argument('--crc-alpha', type=float, default=0.05)
 parser.add_argument('--red-crc-alpha', type=float, default=0.03)
 parser.add_argument('--green-crc-alpha', type=float, default=0.05)
@@ -77,6 +79,7 @@ cmds = [
     'LOSS.num_class 2',
     'CALIB.mc_samples {}'.format(args.mc_samples),
     'CALIB.alpha {}'.format(args.alpha),
+    'CALIB.cp_method {}'.format(args.cp_method),
     'CALIB.crc_alpha {}'.format(args.crc_alpha),
     'CALIB.red_crc_alpha {}'.format(args.red_crc_alpha),
     'CALIB.green_crc_alpha {}'.format(args.green_crc_alpha),

@@ -358,9 +358,81 @@ class SegSolver(Solver):
             'top1_fallback_rate': empty.float().mean().item(),
         }
 
+    def _aps_scores(self, prob, label):
+        sorted_prob, sorted_idx = torch.sort(prob, dim=1, descending=True)
+        cum_prob = torch.cumsum(sorted_prob, dim=1)
+        label = label.long().view(-1, 1)
+        label_rank = sorted_idx.eq(label).float().argmax(dim=1)
+        return cum_prob[torch.arange(prob.shape[0], device=prob.device), label_rank]
+
+    def _aps_prediction_set_stats(self, prob, label, qhat):
+        sorted_prob, sorted_idx = torch.sort(prob, dim=1, descending=True)
+        cum_prob = torch.cumsum(sorted_prob, dim=1)
+        keep_sorted = cum_prob <= qhat
+        first_exceed = torch.logical_and(
+            cum_prob > qhat,
+            torch.cumsum((cum_prob > qhat).float(), dim=1).eq(1))
+        keep_sorted = torch.logical_or(keep_sorted, first_exceed)
+        keep_sorted[:, 0] = True
+
+        pred_set = torch.zeros_like(keep_sorted)
+        pred_set.scatter_(1, sorted_idx, keep_sorted)
+        label = label.long()
+        covered = pred_set[torch.arange(label.numel(), device=label.device), label]
+        set_size = pred_set.float().sum(dim=1)
+        multi_label = set_size.gt(1)
+        risk_class = getattr(self, '_current_cp_risk_class', None)
+        risk_coverage = float('nan')
+        risk_set_rate = float('nan')
+        if risk_class is not None:
+            risk_mask = label.eq(int(risk_class))
+            if risk_mask.any():
+                risk_coverage = covered[risk_mask].float().mean().item()
+            risk_set_rate = pred_set[:, int(risk_class)].float().mean().item()
+        return pred_set, {
+            'coverage': covered.float().mean().item(),
+            'avg_set_size': set_size.mean().item(),
+            'singleton_rate': set_size.eq(1).float().mean().item(),
+            'doubleton_rate': set_size.eq(2).float().mean().item(),
+            'multi_label_rate': multi_label.float().mean().item(),
+            'empty_rate': 0.0,
+            'top1_fallback_rate': 0.0,
+            'risk_coverage': risk_coverage,
+            'risk_set_rate': risk_set_rate,
+        }
+
+    def _cp_scores(self, prob, label, method):
+        if method == 'threshold':
+            true_prob = prob[torch.arange(label.numel(), device=label.device),
+                             label.long()]
+            return 1.0 - true_prob
+        if method == 'aps':
+            return self._aps_scores(prob, label)
+        raise ValueError('Unsupported CALIB.cp_method: %s' % method)
+
+    def _cp_prediction_set_stats(self, prob, label, qhat, method, risk_class):
+        if method == 'threshold':
+            pred_set, stats = self._prediction_set_stats(prob, label, qhat)
+            risk_mask = label.long().eq(int(risk_class))
+            covered = pred_set[torch.arange(label.numel(), device=label.device),
+                               label.long()]
+            stats['doubleton_rate'] = pred_set.float().sum(dim=1).eq(2).float().mean().item()
+            stats['multi_label_rate'] = stats['doubleton_rate']
+            stats['risk_coverage'] = (
+                covered[risk_mask].float().mean().item() if risk_mask.any()
+                else float('nan'))
+            stats['risk_set_rate'] = pred_set[:, int(risk_class)].float().mean().item()
+            return pred_set, stats
+        self._current_cp_risk_class = risk_class
+        try:
+            return self._aps_prediction_set_stats(prob, label, qhat)
+        finally:
+            self._current_cp_risk_class = None
+
     def _calibrated_eval_one(self, name, prob, label, qhat,
-                             crc_threshold, risk_class, class_num):
-        _, set_stats = self._prediction_set_stats(prob, label, qhat)
+                             crc_threshold, risk_class, class_num, cp_method):
+        _, set_stats = self._cp_prediction_set_stats(
+            prob, label, qhat, cp_method, risk_class)
         pred_crc = self._crc_pred(prob, risk_class, crc_threshold)
         metrics = self._head_metrics_from_pred(pred_crc, label, class_num)
         risk = self._risk_stats(pred_crc, label, risk_class)
@@ -433,6 +505,9 @@ class SegSolver(Solver):
             'green': int(getattr(flags, 'green_risk_class', flags.risk_class)),
         }
         alpha, crc_alpha = float(flags.alpha), float(flags.crc_alpha)
+        cp_method = str(getattr(flags, 'cp_method', 'threshold')).lower()
+        if cp_method not in ('threshold', 'aps'):
+            raise ValueError('Unsupported CALIB.cp_method: %s' % cp_method)
         crc_alpha_by_head = {
             'red': float(getattr(flags, 'red_crc_alpha', crc_alpha)),
             'green': float(getattr(flags, 'green_crc_alpha', crc_alpha)),
@@ -497,10 +572,9 @@ class SegSolver(Solver):
             for name, prob, label in [
                     ('red', mc_prob_1, label_1),
                     ('green', mc_prob_2, label_2)]:
-                true_prob = prob[torch.arange(label.numel(), device=label.device),
-                                 label.long()]
                 if split == 'calibration':
-                    calibration_scores[name].extend((1.0 - true_prob).cpu().tolist())
+                    cp_scores = self._cp_scores(prob, label, cp_method)
+                    calibration_scores[name].extend(cp_scores.cpu().tolist())
                     risk_class = risk_class_by_head[name]
                     risk_mask = label.long().eq(risk_class)
                     if risk_mask.any():
@@ -565,7 +639,7 @@ class SegSolver(Solver):
                     ('green', outputs['mc_prob_2'], outputs['label_2'])]:
                 eval_metrics = self._calibrated_eval_one(
                     name, prob, label, qhat[name], crc_threshold[name],
-                    risk_class_by_head[name], class_num)
+                    risk_class_by_head[name], class_num, cp_method)
                 shape_rows[it].update(eval_metrics)
                 for key, value in eval_metrics.items():
                     update_average(key, value)
@@ -619,6 +693,7 @@ class SegSolver(Solver):
             'test_indices': test_indices,
             'mc_samples': int(flags.mc_samples),
             'alpha': alpha,
+            'cp_method': cp_method,
             'crc_alpha': crc_alpha,
             'crc_alpha_by_head': crc_alpha_by_head,
             'risk_class_by_head': risk_class_by_head,

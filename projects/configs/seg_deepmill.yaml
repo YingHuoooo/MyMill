@@ -91,6 +91,7 @@ LOSS:
 CALIB:
   mc_samples: 8
   alpha: 0.1
+  cp_method: threshold
   crc_alpha: 0.05
   red_crc_alpha: 0.03
   green_crc_alpha: 0.05
