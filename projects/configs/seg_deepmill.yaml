@@ -87,6 +87,12 @@ MODEL:
 LOSS:
   mask: -1
   num_class: 2
+  name: ce
+  red_risk_class: 0
+  green_risk_class: 1
+  risk_class_weight: 1.0
+  fn_penalty_weight: 0.0
+  calib_weight: 0.0
 
 CALIB:
   mc_samples: 8

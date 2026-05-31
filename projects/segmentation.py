@@ -146,8 +146,8 @@ class SegSolver(Solver):
     def train_step(self, batch):
         batch = self.process_batch(batch, self.FLAGS.DATA.train)
         logit_1,logit_2, label, label_2 = self.model_forward(batch)
-        loss_1 = self.loss_function(logit_1, label)
-        loss_2 = self.loss_function(logit_2, label_2)
+        loss_1 = self.loss_function(logit_1, label, head='red')
+        loss_2 = self.loss_function(logit_2, label_2, head='green')
         loss = (loss_1 + loss_2)/2
         accu_1 = self.accuracy(logit_1, label)
         accu_2 = self.accuracy(logit_2, label_2)
@@ -176,8 +176,8 @@ class SegSolver(Solver):
         with torch.no_grad():
             logit_1,logit_2, label, label_2 = self.model_forward(batch)
         # self.visualization(batch['points'], logit, label, ".\\data\\vis\\"+batch['filename'][0][:-4]+".obj") #FC:目前可视化只支持test的batch size=1
-        loss_1 = self.loss_function(logit_1, label)
-        loss_2 = self.loss_function(logit_2, label_2)
+        loss_1 = self.loss_function(logit_1, label, head='red')
+        loss_2 = self.loss_function(logit_2, label_2, head='green')
         loss = (loss_1 + loss_2) / 2
         accu_1 = self.accuracy(logit_1, label)
         accu_2 = self.accuracy(logit_2, label_2)
@@ -873,9 +873,35 @@ class SegSolver(Solver):
         avg_tracker.update({'test/mIoU_part': torch.Tensor([iou_part])})
         tqdm.write('=> Epoch: %d, test/mIoU_part: %f' % (epoch, iou_part))
 
-    def loss_function(self, logit, label):
-        criterion = torch.nn.CrossEntropyLoss()
-        loss = criterion(logit, label.long())
+    def loss_function(self, logit, label, head='red'):
+        flags = self.FLAGS.LOSS
+        label = label.long()
+        loss_name = flags.name.lower()
+        if loss_name in ('', 'ce', 'cross_entropy'):
+            criterion = torch.nn.CrossEntropyLoss()
+            return criterion(logit, label)
+
+        if loss_name not in ('risk_aware', 'risk_calib', 'risk_ce'):
+            raise ValueError('Unsupported LOSS.name: %s' % flags.name)
+
+        risk_class = (int(flags.red_risk_class) if head == 'red'
+                      else int(flags.green_risk_class))
+        prob = torch.nn.functional.softmax(logit, dim=1)
+        ce = torch.nn.functional.cross_entropy(logit, label, reduction='none')
+        weights = torch.ones_like(ce)
+        weights[label.eq(risk_class)] = float(flags.risk_class_weight)
+        loss = (ce * weights).mean()
+
+        risk_mask = label.eq(risk_class)
+        if float(flags.fn_penalty_weight) > 0 and risk_mask.any():
+            fn_penalty = (1.0 - prob[risk_mask, risk_class]).mean()
+            loss = loss + float(flags.fn_penalty_weight) * fn_penalty
+
+        if float(flags.calib_weight) > 0:
+            target = torch.nn.functional.one_hot(
+                label, num_classes=logit.shape[1]).float()
+            brier = torch.sum((prob - target) ** 2, dim=1).mean()
+            loss = loss + float(flags.calib_weight) * brier
         return loss
 
     def accuracy(self, logit, label):

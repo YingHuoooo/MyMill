@@ -58,6 +58,18 @@ parser.add_argument('--reset-epoch', action='store_true',
                     help='Restart training from epoch 1 after loading a checkpoint.')
 parser.add_argument('--trainable-keywords', type=str, default='',
                     help='Comma-separated parameter name filters to train.')
+parser.add_argument('--loss-name', type=str, default='',
+                    help='Override LOSS.name, e.g. risk_aware.')
+parser.add_argument('--red-risk-class', type=int, default=0,
+                    help='Risk class used by risk-aware loss for red head.')
+parser.add_argument('--green-risk-class', type=int, default=1,
+                    help='Risk class used by risk-aware loss for green head.')
+parser.add_argument('--risk-class-weight', type=float, default=-1,
+                    help='CE weight for risk-class labels.')
+parser.add_argument('--fn-penalty-weight', type=float, default=-1,
+                    help='Penalty for low risk-class probability.')
+parser.add_argument('--calib-weight', type=float, default=-1,
+                    help='Brier calibration auxiliary loss weight.')
 
 args = parser.parse_args()
 if args.model.lower() == 'unet' and args.depth < 5:
@@ -137,6 +149,16 @@ for i in range(len(ratios)):
       cmds.append('SOLVER.lr {}'.format(args.lr))
     if args.lr_type:
       cmds.append('SOLVER.lr_type {}'.format(args.lr_type))
+    if args.loss_name:
+      cmds.append('LOSS.name {}'.format(args.loss_name))
+    cmds.append('LOSS.red_risk_class {}'.format(args.red_risk_class))
+    cmds.append('LOSS.green_risk_class {}'.format(args.green_risk_class))
+    if args.risk_class_weight > 0:
+      cmds.append('LOSS.risk_class_weight {}'.format(args.risk_class_weight))
+    if args.fn_penalty_weight >= 0:
+      cmds.append('LOSS.fn_penalty_weight {}'.format(args.fn_penalty_weight))
+    if args.calib_weight >= 0:
+      cmds.append('LOSS.calib_weight {}'.format(args.calib_weight))
 
     cmd = ' '.join(cmds)
     print('\n', cmd, '\n')

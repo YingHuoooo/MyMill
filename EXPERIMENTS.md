@@ -129,6 +129,24 @@ cd projects
 python run_seg_deepmill.py --depth 5 --model unet --conditioning film_both --film-scale 0.1 --alias film_both_ft_s01 --ratios 1.0 --max-epoch 150 --test-every-epoch 10 --ckpt ../pretrained/00840solver/00840.solver.tar --strict-load false --resume-optimizer false --reset-epoch --lr 0.00001 --trainable-keywords film_conditioners,skip_film_conditioners
 ```
 
+## Risk-Aware Fine-Tuning
+
+Fine-tune the author checkpoint with a false-negative-sensitive and
+calibration-aware objective:
+
+```bash
+cd projects
+python run_seg_deepmill.py --depth 5 --model unet --conditioning concat --alias risk_loss_ft_w2_fn02_cal005 --ratios 1.0 --max-epoch 80 --test-every-epoch 10 --ckpt ../pretrained/00840solver/00840.solver.tar --strict-load true --resume-optimizer false --reset-epoch --lr 0.000005 --trainable-keywords decoder,header --loss-name risk_aware --red-risk-class 0 --green-risk-class 1 --risk-class-weight 2.0 --fn-penalty-weight 0.2 --calib-weight 0.05
+```
+
+Recommended first sweep:
+
+- `risk_class_weight`: `1.5`, `2.0`
+- `fn_penalty_weight`: `0.1`, `0.2`
+- `calib_weight`: `0.02`, `0.05`
+
+Evaluate the best fine-tuned checkpoint with head-specific CRC.
+
 ## Suggested Metrics
 
 - Primary: `f1_red`, `f1_green`, `f1_avg`, `mIoU`.

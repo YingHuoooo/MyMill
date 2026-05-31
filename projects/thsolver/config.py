@@ -114,6 +114,11 @@ _C.LOSS = CN(new_allowed=True)
 _C.LOSS.name                = ''          # The name of the loss
 _C.LOSS.num_class           = 40          # The class number for the cross-entropy loss
 _C.LOSS.label_smoothing     = 0.0         # The factor of label smoothing
+_C.LOSS.red_risk_class      = 0           # Risk class for red head
+_C.LOSS.green_risk_class    = 1           # Risk class for green head
+_C.LOSS.risk_class_weight   = 1.0         # CE weight for risk-class labels
+_C.LOSS.fn_penalty_weight   = 0.0         # Penalize low risk-class probability
+_C.LOSS.calib_weight        = 0.0         # Brier calibration auxiliary weight
 
 # MC conformal prediction / CRC evaluation parameters
 _C.CALIB = CN(new_allowed=True)

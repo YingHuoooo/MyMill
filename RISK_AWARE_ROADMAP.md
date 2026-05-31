@@ -92,6 +92,12 @@ Experiment:
 loss = cross_entropy + lambda_calib * calibration_loss
 ```
 
+Implemented setting:
+
+```bash
+--loss-name risk_aware --calib-weight 0.05
+```
+
 Expected effect:
 
 - Better calibrated probabilities.
@@ -108,6 +114,18 @@ Experiment:
 
 ```bash
 loss = uncertainty_weight * cross_entropy
+```
+
+Current practical approximation:
+
+```bash
+loss = weighted_cross_entropy + lambda_fn * (1 - p_risk)
+```
+
+Implemented setting:
+
+```bash
+--loss-name risk_aware --risk-class-weight 2.0 --fn-penalty-weight 0.2
 ```
 
 Expected effect:
@@ -190,4 +208,3 @@ Reliability table:
 | APS | | | | | |
 | RAPS | | | | | |
 | CRC | | | | | |
-
