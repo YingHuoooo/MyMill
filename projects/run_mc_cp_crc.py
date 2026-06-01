@@ -38,6 +38,7 @@ parser.add_argument('--cp-method', type=str, default='threshold',
 parser.add_argument('--crc-alpha', type=float, default=0.05)
 parser.add_argument('--red-crc-alpha', type=float, default=0.03)
 parser.add_argument('--green-crc-alpha', type=float, default=0.05)
+parser.add_argument('--crc-max-threshold', type=float, default=1.0)
 parser.add_argument('--temperature-scaling', action='store_true')
 parser.add_argument('--temperature-min', type=float, default=0.5)
 parser.add_argument('--temperature-max', type=float, default=5.0)
@@ -91,6 +92,7 @@ cmds = [
     'CALIB.crc_alpha {}'.format(args.crc_alpha),
     'CALIB.red_crc_alpha {}'.format(args.red_crc_alpha),
     'CALIB.green_crc_alpha {}'.format(args.green_crc_alpha),
+    'CALIB.crc_max_threshold {}'.format(args.crc_max_threshold),
     'CALIB.temperature_scaling {}'.format(args.temperature_scaling),
     'CALIB.temperature_min {}'.format(args.temperature_min),
     'CALIB.temperature_max {}'.format(args.temperature_max),

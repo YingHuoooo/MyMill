@@ -128,6 +128,7 @@ _C.CALIB.cp_method          = 'threshold' # threshold or aps prediction sets
 _C.CALIB.crc_alpha          = 0.05        # CRC false-negative risk level
 _C.CALIB.red_crc_alpha      = 0.03        # CRC risk level for red head
 _C.CALIB.green_crc_alpha    = 0.05        # CRC risk level for green head
+_C.CALIB.crc_max_threshold  = 1.0         # Set 0.5 to avoid stricter-than-argmax CRC
 _C.CALIB.temperature_scaling = False      # Fit per-head post-hoc temperatures
 _C.CALIB.temperature_min    = 0.5         # Minimum temperature search value
 _C.CALIB.temperature_max    = 5.0         # Maximum temperature search value

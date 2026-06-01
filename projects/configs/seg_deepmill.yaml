@@ -101,6 +101,7 @@ CALIB:
   crc_alpha: 0.05
   red_crc_alpha: 0.03
   green_crc_alpha: 0.05
+  crc_max_threshold: 1.0
   temperature_scaling: False
   temperature_min: 0.5
   temperature_max: 5.0

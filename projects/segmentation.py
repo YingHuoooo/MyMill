@@ -553,6 +553,8 @@ class SegSolver(Solver):
 
     def _build_adaptive_crc(self, adaptive_records, alpha_by_head):
         adaptive = {'edges': {}, 'qhat': {}, 'threshold': {}}
+        crc_max_threshold = float(
+            getattr(self.FLAGS.CALIB, 'crc_max_threshold', 1.0))
         for name, records in adaptive_records.items():
             difficulties = [record['difficulty'] for record in records]
             edges = self._difficulty_edges(
@@ -571,7 +573,8 @@ class SegSolver(Solver):
                 qhat = self._conformal_quantile(
                     scores, alpha_by_head[name]) if scores else fallback_qhat
                 adaptive['qhat'][name][str(bin_id)] = qhat
-                adaptive['threshold'][name][str(bin_id)] = 1.0 - qhat
+                adaptive['threshold'][name][str(bin_id)] = min(
+                    1.0 - qhat, crc_max_threshold)
         return adaptive
 
     def _write_mc_cp_crc_outputs(self, results, shape_rows):
@@ -640,6 +643,7 @@ class SegSolver(Solver):
             'red': float(getattr(flags, 'red_crc_alpha', crc_alpha)),
             'green': float(getattr(flags, 'green_crc_alpha', crc_alpha)),
         }
+        crc_max_threshold = float(getattr(flags, 'crc_max_threshold', 1.0))
         temperature_scaling = bool(getattr(flags, 'temperature_scaling', False))
         temperature_min = float(getattr(flags, 'temperature_min', 0.5))
         temperature_max = float(getattr(flags, 'temperature_max', 5.0))
@@ -826,8 +830,8 @@ class SegSolver(Solver):
                 crc_scores['green'], crc_alpha_by_head['green']),
         }
         crc_threshold = {
-            'red': 1.0 - crc_qhat['red'],
-            'green': 1.0 - crc_qhat['green'],
+            'red': min(1.0 - crc_qhat['red'], crc_max_threshold),
+            'green': min(1.0 - crc_qhat['green'], crc_max_threshold),
         }
         adaptive_crc_info = None
         if adaptive_crc:
@@ -991,6 +995,7 @@ class SegSolver(Solver):
             'cp_method': cp_method,
             'crc_alpha': crc_alpha,
             'crc_alpha_by_head': crc_alpha_by_head,
+            'crc_max_threshold': crc_max_threshold,
             'temperature_scaling': temperature_scaling,
             'temperature_min': temperature_min,
             'temperature_max': temperature_max,
