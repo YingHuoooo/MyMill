@@ -10,8 +10,12 @@
 - APS produces valid but overly conservative prediction sets on this binary
   task. It is useful as an ablation, but not the main contribution unless later
   regularized.
-- Head-specific CRC is the strongest current result: red and green false-negative
-  risks are controlled below the target with almost no loss in F1/mIoU.
+- The current best result is head-specific temperature scaling plus
+  risk-recall constrained CRC. It reduces the average risk-class false-negative
+  rate from `0.04571` to `0.04134` while preserving red/green mIoU and only
+  slightly increasing predicted-risk area.
+- The first-choice paper candidate is saved in
+  [`PAPER_FIRST_CANDIDATE.md`](PAPER_FIRST_CANDIDATE.md).
 
 ## Main Paper Direction
 
@@ -21,10 +25,12 @@ manufacturing** rather than as an architecture-only improvement.
 Recommended method stack:
 
 1. DeepMill baseline checkpoint.
-2. Head-specific CRC for manufacturing-risk control.
-3. Adaptive CRC to reduce over-conservatism across easy and hard samples.
-4. Risk-aware fine-tuning loss to improve the base model before calibration.
-5. Optional APS/RAPS ablations for set-valued uncertainty.
+2. Dual-head manufacturing-risk formulation.
+3. Head-specific temperature scaling.
+4. Risk-recall constrained CRC with `crc_max_threshold=0.5`.
+5. Risk-aware evaluation with false-negative rate, predicted-risk rate, ECE,
+   NLL, and Brier.
+6. Optional 2025 extension: CCRA-lite / conditional conformal risk adaptation.
 
 ## Method 1: Head-Specific CRC
 
@@ -50,6 +56,15 @@ Primary metrics:
 - `predicted_risk_rate`
 
 ## Method 2: Adaptive CRC
+
+Current status: simple adaptive CRC by entropy or margin did not improve over
+global risk-recall CRC. Keep it as an ablation rather than the main route.
+
+The more promising 2025-style extension is **Conditional / Calibrated Conformal
+Risk Adaptation (CCRA)**, which adapts CRC to sample difficulty while explicitly
+addressing conditional risk. A practical DeepMill version should use shape-level
+features such as entropy, confidence, risk probability mass, point count, and
+tool parameters to select or predict a threshold.
 
 Motivation: one global threshold can be too conservative on easy shapes and not
 conservative enough on hard shapes.

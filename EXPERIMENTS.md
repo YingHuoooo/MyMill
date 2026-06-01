@@ -85,6 +85,13 @@ cd projects
 python run_mc_cp_crc.py --alias risk_recall_crc_author --ckpt ../pretrained/00840solver/00840.solver.tar --seed 123 --split-mode random --split-seed 123 --mc-samples 1 --temperature-scaling --temperature-min 0.5 --temperature-max 5.0 --temperature-steps 91 --cp-method threshold --alpha 0.1 --crc-alpha 0.05 --red-crc-alpha 0.03 --green-crc-alpha 0.05 --crc-max-threshold 0.5 --calibration-ratio 0.2 --red-risk-class 0 --green-risk-class 1
 ```
 
+Selective Risk Rescue:
+
+```bash
+cd projects
+python run_mc_cp_crc.py --alias selective_risk_rescue_author --ckpt ../pretrained/00840solver/00840.solver.tar --seed 123 --split-mode random --split-seed 123 --mc-samples 1 --temperature-scaling --temperature-min 0.5 --temperature-max 5.0 --temperature-steps 91 --cp-method threshold --alpha 0.1 --crc-alpha 0.05 --red-crc-alpha 0.03 --green-crc-alpha 0.05 --crc-max-threshold 0.5 --risk-rescue --risk-rescue-budget 0.002 --risk-rescue-min-prob 0.25 --calibration-ratio 0.2 --red-risk-class 0 --green-risk-class 1
+```
+
 Adaptive CRC:
 
 ```bash
@@ -118,7 +125,9 @@ scaling, CRC, and adaptive CRC metrics also include risk-class `fn_rate` and
 `predicted_risk_rate` so risk reduction can be compared directly. Setting
 `--crc-max-threshold 0.5` makes CRC risk-recall oriented: it can lower the risk
 threshold, but it will not raise the threshold above the original argmax
-boundary in binary heads.
+boundary in binary heads. Selective Risk Rescue adds a budgeted second-stage
+rescue threshold for near-boundary non-risk predictions; it reports
+`risk_rescue_*` metrics alongside `crc_*` metrics.
 
 To compare against the FiLM branch, keep the same calibration settings and
 change only the checkpoint/model options:

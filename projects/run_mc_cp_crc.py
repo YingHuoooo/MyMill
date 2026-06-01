@@ -39,6 +39,10 @@ parser.add_argument('--crc-alpha', type=float, default=0.05)
 parser.add_argument('--red-crc-alpha', type=float, default=0.03)
 parser.add_argument('--green-crc-alpha', type=float, default=0.05)
 parser.add_argument('--crc-max-threshold', type=float, default=1.0)
+parser.add_argument('--risk-rescue', '--selective-risk-rescue',
+                    dest='risk_rescue', action='store_true')
+parser.add_argument('--risk-rescue-budget', type=float, default=0.002)
+parser.add_argument('--risk-rescue-min-prob', type=float, default=0.25)
 parser.add_argument('--temperature-scaling', action='store_true')
 parser.add_argument('--temperature-min', type=float, default=0.5)
 parser.add_argument('--temperature-max', type=float, default=5.0)
@@ -93,6 +97,9 @@ cmds = [
     'CALIB.red_crc_alpha {}'.format(args.red_crc_alpha),
     'CALIB.green_crc_alpha {}'.format(args.green_crc_alpha),
     'CALIB.crc_max_threshold {}'.format(args.crc_max_threshold),
+    'CALIB.risk_rescue {}'.format(args.risk_rescue),
+    'CALIB.risk_rescue_budget {}'.format(args.risk_rescue_budget),
+    'CALIB.risk_rescue_min_prob {}'.format(args.risk_rescue_min_prob),
     'CALIB.temperature_scaling {}'.format(args.temperature_scaling),
     'CALIB.temperature_min {}'.format(args.temperature_min),
     'CALIB.temperature_max {}'.format(args.temperature_max),

@@ -523,6 +523,97 @@ class SegSolver(Solver):
             output[prefix + '/' + key] = value
         return output
 
+    def _risk_rescue_pred(self, prob, risk_class, crc_threshold,
+                          rescue_threshold):
+        pred_crc = self._crc_pred(prob, risk_class, crc_threshold)
+        pred_crc[prob[:, risk_class] >= rescue_threshold] = risk_class
+        return pred_crc
+
+    def _risk_rescue_eval_one(self, prefix, prob, label, crc_threshold,
+                              rescue_threshold, risk_class, class_num):
+        pred_crc = self._crc_pred(prob, risk_class, crc_threshold)
+        pred_rescue = self._risk_rescue_pred(
+            prob, risk_class, crc_threshold, rescue_threshold)
+        metrics = self._head_metrics_from_pred(pred_rescue, label, class_num)
+        risk = self._risk_stats(pred_rescue, label, risk_class)
+        rescued = torch.logical_and(
+            pred_rescue.eq(risk_class), ~pred_crc.eq(risk_class))
+        output = {}
+        for key, value in metrics.items():
+            if key not in ('intsc', 'union'):
+                output[prefix + '/' + key] = value
+        for key, value in risk.items():
+            output[prefix + '/' + key] = value
+        output[prefix + '/rescued_rate'] = rescued.float().mean().item()
+        output[prefix + '/rescue_threshold'] = float(rescue_threshold)
+        return output
+
+    def _build_risk_rescue(self, rescue_records, crc_threshold,
+                           risk_class_by_head, class_num, max_extra_rate,
+                           min_prob):
+        rescue_info = {'threshold': {}, 'calibration': {}}
+        max_extra_rate = max(0.0, float(max_extra_rate))
+        min_prob = max(0.0, min(1.0, float(min_prob)))
+        for name, records in rescue_records.items():
+            threshold = float(crc_threshold[name])
+            if not records:
+                rescue_info['threshold'][name] = threshold
+                rescue_info['calibration'][name] = {}
+                continue
+
+            prob = torch.cat([record['prob'] for record in records], dim=0)
+            label = torch.cat([record['label'] for record in records], dim=0)
+            risk_class = risk_class_by_head[name]
+            base_pred = self._crc_pred(prob, risk_class, threshold)
+            base_risk = self._risk_stats(base_pred, label, risk_class)
+            max_predicted_rate = (
+                base_risk['predicted_risk_rate'] + max_extra_rate)
+
+            risk_prob = prob[:, risk_class]
+            candidate_mask = torch.logical_and(
+                risk_prob < threshold, risk_prob >= min_prob)
+            candidates = risk_prob[candidate_mask]
+            best_threshold = threshold
+            best_risk = base_risk
+            best_rescued_rate = 0.0
+            if candidates.numel() > 0 and max_extra_rate > 0.0:
+                candidate_np = candidates.cpu().numpy()
+                quantiles = np.linspace(0.0, 1.0, 101)
+                thresholds = sorted(
+                    set(float(v) for v in np.quantile(candidate_np, quantiles)),
+                    reverse=True)
+                for candidate_threshold in thresholds:
+                    pred = self._risk_rescue_pred(
+                        prob, risk_class, threshold, candidate_threshold)
+                    risk = self._risk_stats(pred, label, risk_class)
+                    if (risk['predicted_risk_rate'] >
+                            max_predicted_rate + 1.0e-12):
+                        continue
+                    rescued = torch.logical_and(
+                        pred.eq(risk_class), ~base_pred.eq(risk_class))
+                    rescued_rate = rescued.float().mean().item()
+                    improves_fn = risk['fn_rate'] < best_risk['fn_rate'] - 1.0e-12
+                    ties_fn = abs(risk['fn_rate'] - best_risk['fn_rate']) <= 1.0e-12
+                    uses_less_area = (
+                        risk['predicted_risk_rate'] <
+                        best_risk['predicted_risk_rate'] - 1.0e-12)
+                    if improves_fn or (ties_fn and uses_less_area):
+                        best_threshold = float(candidate_threshold)
+                        best_risk = risk
+                        best_rescued_rate = rescued_rate
+
+            rescue_info['threshold'][name] = best_threshold
+            rescue_info['calibration'][name] = {
+                'base_fn_rate': base_risk['fn_rate'],
+                'base_predicted_risk_rate': base_risk['predicted_risk_rate'],
+                'rescued_fn_rate': best_risk['fn_rate'],
+                'rescued_predicted_risk_rate': best_risk['predicted_risk_rate'],
+                'rescued_rate': best_rescued_rate,
+                'max_extra_rate': max_extra_rate,
+                'min_prob': min_prob,
+            }
+        return rescue_info
+
     def _shape_difficulty(self, prob, score_name):
         prob = prob.detach()
         if score_name == 'entropy':
@@ -644,6 +735,9 @@ class SegSolver(Solver):
             'green': float(getattr(flags, 'green_crc_alpha', crc_alpha)),
         }
         crc_max_threshold = float(getattr(flags, 'crc_max_threshold', 1.0))
+        risk_rescue = bool(getattr(flags, 'risk_rescue', False))
+        risk_rescue_budget = float(getattr(flags, 'risk_rescue_budget', 0.002))
+        risk_rescue_min_prob = float(getattr(flags, 'risk_rescue_min_prob', 0.25))
         temperature_scaling = bool(getattr(flags, 'temperature_scaling', False))
         temperature_min = float(getattr(flags, 'temperature_min', 0.5))
         temperature_max = float(getattr(flags, 'temperature_max', 5.0))
@@ -673,6 +767,7 @@ class SegSolver(Solver):
         crc_scores = {'red': [], 'green': []}
         adaptive_crc_records = {'red': [], 'green': []}
         temperature_records = {'red': [], 'green': []}
+        rescue_records = {'red': [], 'green': []}
         accum = {}
         accum_count = {}
         shape_rows = []
@@ -755,6 +850,10 @@ class SegSolver(Solver):
                                 'difficulty': difficulty,
                                 'scores': risk_scores.cpu().tolist(),
                             })
+                        rescue_records[name].append({
+                            'prob': prob.detach().cpu(),
+                            'label': label.detach().cpu(),
+                        })
                 metrics, risk, eval_metrics = self._head_eval_one(
                     'mc_' + name, prob, label,
                     risk_class_by_head[name], class_num)
@@ -818,6 +917,10 @@ class SegSolver(Solver):
                             'difficulty': difficulty,
                             'scores': risk_scores.cpu().tolist(),
                         })
+                    rescue_records[name].append({
+                        'prob': prob.detach().cpu(),
+                        'label': label.detach().cpu(),
+                    })
 
         qhat = {
             'red': self._conformal_quantile(calibration_scores['red'], alpha),
@@ -837,6 +940,11 @@ class SegSolver(Solver):
         if adaptive_crc:
             adaptive_crc_info = self._build_adaptive_crc(
                 adaptive_crc_records, crc_alpha_by_head)
+        risk_rescue_info = None
+        if risk_rescue:
+            risk_rescue_info = self._build_risk_rescue(
+                rescue_records, crc_threshold, risk_class_by_head, class_num,
+                risk_rescue_budget, risk_rescue_min_prob)
 
         # Re-run the test split once so CP/CRC metrics use calibrated thresholds.
         self.test_iter = iter(self.test_loader)
@@ -879,6 +987,15 @@ class SegSolver(Solver):
                 shape_rows[it].update(eval_metrics)
                 for key, value in eval_metrics.items():
                     update_average(key, value)
+                if risk_rescue:
+                    rescue_threshold = risk_rescue_info['threshold'][name]
+                    rescue_metrics = self._risk_rescue_eval_one(
+                        'risk_rescue_' + name, prob, label,
+                        crc_threshold[name], rescue_threshold,
+                        risk_class_by_head[name], class_num)
+                    shape_rows[it].update(rescue_metrics)
+                    for key, value in rescue_metrics.items():
+                        update_average(key, value)
                 if adaptive_crc:
                     edges = adaptive_crc_info['edges'][name]
                     bin_id = self._difficulty_bin(difficulty, edges)
@@ -962,6 +1079,18 @@ class SegSolver(Solver):
                 averaged_metrics['adaptive_crc/' + metric_name] = (
                     averaged_metrics['adaptive_crc_red/' + metric_name] +
                     averaged_metrics['adaptive_crc_green/' + metric_name]) / 2.0
+        if risk_rescue:
+            averaged_metrics['risk_rescue/accu'] = (
+                averaged_metrics['risk_rescue_red/accu'] +
+                averaged_metrics['risk_rescue_green/accu']) / 2.0
+            averaged_metrics['risk_rescue/f1_avg'] = (
+                averaged_metrics['risk_rescue_red/f1'] +
+                averaged_metrics['risk_rescue_green/f1']) / 2.0
+            for metric_name in (
+                    'fn_rate', 'predicted_risk_rate', 'rescued_rate'):
+                averaged_metrics['risk_rescue/' + metric_name] = (
+                    averaged_metrics['risk_rescue_red/' + metric_name] +
+                    averaged_metrics['risk_rescue_green/' + metric_name]) / 2.0
         if temperature_scaling:
             averaged_metrics['temperature/red'] = temperature_by_head['red']
             averaged_metrics['temperature/green'] = temperature_by_head['green']
@@ -996,6 +1125,10 @@ class SegSolver(Solver):
             'crc_alpha': crc_alpha,
             'crc_alpha_by_head': crc_alpha_by_head,
             'crc_max_threshold': crc_max_threshold,
+            'risk_rescue': risk_rescue,
+            'risk_rescue_budget': risk_rescue_budget,
+            'risk_rescue_min_prob': risk_rescue_min_prob,
+            'risk_rescue_info': risk_rescue_info,
             'temperature_scaling': temperature_scaling,
             'temperature_min': temperature_min,
             'temperature_max': temperature_max,
@@ -1020,6 +1153,9 @@ class SegSolver(Solver):
         if adaptive_crc:
             msg += ', adaptive_crc f1_avg: %.4f' % (
                 averaged_metrics['adaptive_crc/f1_avg'])
+        if risk_rescue:
+            msg += ', risk_rescue fn_rate: %.4f' % (
+                averaged_metrics['risk_rescue/fn_rate'])
         if temperature_scaling:
             msg += ', T(red): %.3f, T(green): %.3f' % (
                 temperature_by_head['red'], temperature_by_head['green'])

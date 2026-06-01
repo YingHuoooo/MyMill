@@ -102,6 +102,9 @@ CALIB:
   red_crc_alpha: 0.03
   green_crc_alpha: 0.05
   crc_max_threshold: 1.0
+  risk_rescue: False
+  risk_rescue_budget: 0.002
+  risk_rescue_min_prob: 0.25
   temperature_scaling: False
   temperature_min: 0.5
   temperature_max: 5.0
