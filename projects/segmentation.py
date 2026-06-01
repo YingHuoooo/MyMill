@@ -499,6 +499,18 @@ class SegSolver(Solver):
             'crc_' + name, prob, label, crc_threshold, risk_class, class_num))
         return output
 
+    def _head_eval_one(self, prefix, prob, label, risk_class, class_num):
+        pred = prob.argmax(dim=1)
+        metrics = self._head_metrics_from_pred(pred, label, class_num)
+        risk = self._risk_stats(pred, label, risk_class)
+        output = {}
+        for key, value in metrics.items():
+            if key not in ('intsc', 'union'):
+                output[prefix + '/' + key] = value
+        for key, value in risk.items():
+            output[prefix + '/' + key] = value
+        return metrics, risk, output
+
     def _crc_eval_one(self, prefix, prob, label, threshold, risk_class, class_num):
         pred_crc = self._crc_pred(prob, risk_class, threshold)
         metrics = self._head_metrics_from_pred(pred_crc, label, class_num)
@@ -691,21 +703,22 @@ class SegSolver(Solver):
             for name, prob, label in [
                     ('red', base_prob_1, label_1),
                     ('green', base_prob_2, label_2)]:
-                metrics = self._head_metrics_from_prob(prob, label, class_num)
-                self._append_head_summary(row, 'baseline_' + name, metrics)
+                metrics, risk, eval_metrics = self._head_eval_one(
+                    'baseline_' + name, prob, label,
+                    risk_class_by_head[name], class_num)
+                row.update(eval_metrics)
                 calib_metrics = self._calibration_metrics_from_prob(
                     prob, label, class_num)
                 for key, value in calib_metrics.items():
                     row['baseline_' + name + '/' + key] = value
-                for key, value in metrics.items():
-                    if key not in ('intsc', 'union'):
-                        update_average('baseline_all_' + name + '/' + key, value)
+                for key, value in eval_metrics.items():
+                    update_average(
+                        key.replace('baseline_', 'baseline_all_', 1), value)
                 for key, value in calib_metrics.items():
                     update_average('baseline_all_' + name + '/' + key, value)
                 if split == 'test':
-                    for key, value in metrics.items():
-                        if key not in ('intsc', 'union'):
-                            update_average('baseline_' + name + '/' + key, value)
+                    for key, value in eval_metrics.items():
+                        update_average(key, value)
                     for key, value in calib_metrics.items():
                         update_average('baseline_' + name + '/' + key, value)
 
@@ -738,8 +751,10 @@ class SegSolver(Solver):
                                 'difficulty': difficulty,
                                 'scores': risk_scores.cpu().tolist(),
                             })
-                metrics = self._head_metrics_from_prob(prob, label, class_num)
-                self._append_head_summary(row, 'mc_' + name, metrics)
+                metrics, risk, eval_metrics = self._head_eval_one(
+                    'mc_' + name, prob, label,
+                    risk_class_by_head[name], class_num)
+                row.update(eval_metrics)
                 calib_metrics = self._calibration_metrics_from_prob(
                     prob, label, class_num)
                 for key, value in calib_metrics.items():
@@ -748,15 +763,13 @@ class SegSolver(Solver):
                 row['mc_' + name + '/dropout_var'] = (
                     outputs['mc_var_1'] if name == 'red' else outputs['mc_var_2']
                 ).mean().item()
-                for key, value in metrics.items():
-                    if key not in ('intsc', 'union'):
-                        update_average('mc_all_' + name + '/' + key, value)
+                for key, value in eval_metrics.items():
+                    update_average(key.replace('mc_', 'mc_all_', 1), value)
                 for key, value in calib_metrics.items():
                     update_average('mc_all_' + name + '/' + key, value)
                 if split == 'test':
-                    for key, value in metrics.items():
-                        if key not in ('intsc', 'union'):
-                            update_average('mc_' + name + '/' + key, value)
+                    for key, value in eval_metrics.items():
+                        update_average(key, value)
                     for key, value in calib_metrics.items():
                         update_average('mc_' + name + '/' + key, value)
 
@@ -842,15 +855,15 @@ class SegSolver(Solver):
                         logit, temperature_by_head[name])
                     shape_rows[it]['temperature_' + name] = \
                         temperature_by_head[name]
-                    temp_metrics = self._head_metrics_from_prob(
-                        prob, label, class_num)
-                    self._append_head_summary(
-                        shape_rows[it], 'temp_' + name, temp_metrics)
+                    temp_metrics, temp_risk, temp_eval_metrics = \
+                        self._head_eval_one(
+                            'temp_' + name, prob, label,
+                            risk_class_by_head[name], class_num)
+                    shape_rows[it].update(temp_eval_metrics)
                     temp_calib_metrics = self._calibration_metrics_from_prob(
                         prob, label, class_num)
-                    for key, value in temp_metrics.items():
-                        if key not in ('intsc', 'union'):
-                            update_average('temp_' + name + '/' + key, value)
+                    for key, value in temp_eval_metrics.items():
+                        update_average(key, value)
                     for key, value in temp_calib_metrics.items():
                         shape_rows[it]['temp_' + name + '/' + key] = value
                         update_average('temp_' + name + '/' + key, value)
@@ -906,6 +919,10 @@ class SegSolver(Solver):
             averaged_metrics['baseline/' + metric_name] = (
                 averaged_metrics['baseline_red/' + metric_name] +
                 averaged_metrics['baseline_green/' + metric_name]) / 2.0
+        for metric_name in ('fn_rate', 'predicted_risk_rate'):
+            averaged_metrics['baseline/' + metric_name] = (
+                averaged_metrics['baseline_red/' + metric_name] +
+                averaged_metrics['baseline_green/' + metric_name]) / 2.0
         averaged_metrics['mc/accu'] = (
             averaged_metrics['mc_red/accu'] +
             averaged_metrics['mc_green/accu']) / 2.0
@@ -916,12 +933,20 @@ class SegSolver(Solver):
             averaged_metrics['mc/' + metric_name] = (
                 averaged_metrics['mc_red/' + metric_name] +
                 averaged_metrics['mc_green/' + metric_name]) / 2.0
+        for metric_name in ('fn_rate', 'predicted_risk_rate'):
+            averaged_metrics['mc/' + metric_name] = (
+                averaged_metrics['mc_red/' + metric_name] +
+                averaged_metrics['mc_green/' + metric_name]) / 2.0
         averaged_metrics['crc/accu'] = (
             averaged_metrics['crc_red/accu'] +
             averaged_metrics['crc_green/accu']) / 2.0
         averaged_metrics['crc/f1_avg'] = (
             averaged_metrics['crc_red/f1'] +
             averaged_metrics['crc_green/f1']) / 2.0
+        for metric_name in ('fn_rate', 'predicted_risk_rate'):
+            averaged_metrics['crc/' + metric_name] = (
+                averaged_metrics['crc_red/' + metric_name] +
+                averaged_metrics['crc_green/' + metric_name]) / 2.0
         if adaptive_crc:
             averaged_metrics['adaptive_crc/accu'] = (
                 averaged_metrics['adaptive_crc_red/accu'] +
@@ -929,6 +954,10 @@ class SegSolver(Solver):
             averaged_metrics['adaptive_crc/f1_avg'] = (
                 averaged_metrics['adaptive_crc_red/f1'] +
                 averaged_metrics['adaptive_crc_green/f1']) / 2.0
+            for metric_name in ('fn_rate', 'predicted_risk_rate'):
+                averaged_metrics['adaptive_crc/' + metric_name] = (
+                    averaged_metrics['adaptive_crc_red/' + metric_name] +
+                    averaged_metrics['adaptive_crc_green/' + metric_name]) / 2.0
         if temperature_scaling:
             averaged_metrics['temperature/red'] = temperature_by_head['red']
             averaged_metrics['temperature/green'] = temperature_by_head['green']
@@ -939,6 +968,10 @@ class SegSolver(Solver):
                 averaged_metrics['temp_red/f1'] +
                 averaged_metrics['temp_green/f1']) / 2.0
             for metric_name in ('nll', 'brier', 'ece'):
+                averaged_metrics['temp/' + metric_name] = (
+                    averaged_metrics['temp_red/' + metric_name] +
+                    averaged_metrics['temp_green/' + metric_name]) / 2.0
+            for metric_name in ('fn_rate', 'predicted_risk_rate'):
                 averaged_metrics['temp/' + metric_name] = (
                     averaged_metrics['temp_red/' + metric_name] +
                     averaged_metrics['temp_green/' + metric_name]) / 2.0

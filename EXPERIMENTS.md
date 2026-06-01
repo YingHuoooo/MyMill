@@ -105,7 +105,9 @@ the summary. APS adds adaptive-set metrics such as `doubleton_rate`,
 fits one post-hoc temperature for each prediction head on the calibration split
 and then uses the calibrated probabilities for CP/CRC thresholds. The learned
 values are saved as `temperature/red` and `temperature/green`; probability
-calibration is tracked with `nll`, `brier`, and `ece`.
+calibration is tracked with `nll`, `brier`, and `ece`. Baseline, MC, temperature
+scaling, CRC, and adaptive CRC metrics also include risk-class `fn_rate` and
+`predicted_risk_rate` so risk reduction can be compared directly.
 
 To compare against the FiLM branch, keep the same calibration settings and
 change only the checkpoint/model options:
