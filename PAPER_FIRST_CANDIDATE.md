@@ -12,6 +12,10 @@ Recommended title direction:
 > Risk-Calibrated DeepMill: Reliability-Aware Accessibility Segmentation for
 > Subtractive Manufacturing
 
+Detailed chapter outline:
+
+- [`PAPER_OUTLINE.md`](PAPER_OUTLINE.md)
+
 ## Current Best Technical Route
 
 ```text
