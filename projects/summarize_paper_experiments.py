@@ -56,13 +56,18 @@ def _relative_drop(row, base_key, method_key):
 
 
 def add_summary(out_rows, method, rows, fn_key, risk_key, ece_key=None,
-                threshold_key=None, method_fn_key=None):
+                threshold_key=None, method_fn_key=None, acc_key=None,
+                f1_key=None):
     if method_fn_key:
         fn_values = [
             _relative_drop(row, 'baseline/fn_rate', method_fn_key)
             for row in rows]
     else:
         fn_values = [to_float(row.get(fn_key)) for row in rows]
+    acc_mean, acc_std = mean_std([to_float(row.get(acc_key)) for row in rows]) \
+        if acc_key else (None, None)
+    f1_mean, f1_std = mean_std([to_float(row.get(f1_key)) for row in rows]) \
+        if f1_key else (None, None)
     fn_mean, fn_std = mean_std(fn_values)
     risk_mean, risk_std = mean_std([to_float(row.get(risk_key)) for row in rows])
     ece_mean, ece_std = mean_std([to_float(row.get(ece_key)) for row in rows]) \
@@ -73,12 +78,16 @@ def add_summary(out_rows, method, rows, fn_key, risk_key, ece_key=None,
     out_rows.append({
         'method': method,
         'n': len(rows),
+        'acc_mean': fmt(acc_mean, 100.0, 2),
+        'acc_std': fmt(acc_std, 100.0, 2),
+        'f1_mean': fmt(f1_mean, 100.0, 2),
+        'f1_std': fmt(f1_std, 100.0, 2),
+        'ece_mean': fmt(ece_mean, 1000.0, 2),
+        'ece_std': fmt(ece_std, 1000.0, 2),
         'rel_fn_drop_mean': fmt(fn_mean, 1.0, 2),
         'rel_fn_drop_std': fmt(fn_std, 1.0, 2),
         'risk_rate_mean': fmt(risk_mean, 100.0, 2),
         'risk_rate_std': fmt(risk_std, 100.0, 2),
-        'ece_mean': fmt(ece_mean, 1000.0, 2),
-        'ece_std': fmt(ece_std, 1000.0, 2),
         'threshold_mean': fmt(threshold_mean, 1.0, 3),
         'threshold_std': fmt(threshold_std, 1.0, 3),
     })
@@ -95,7 +104,9 @@ def build_decision_table(rows):
     if main_rows:
         add_summary(out_rows, 'Argmax', main_rows, None,
                     'baseline/predicted_risk_rate',
-                    ece_key='baseline/ece')
+                    ece_key='baseline/ece',
+                    acc_key='baseline/accu',
+                    f1_key='baseline/f1_avg')
         out_rows[-1]['rel_fn_drop_mean'] = '--'
         out_rows[-1]['rel_fn_drop_std'] = '--'
         calibration_methods = [
@@ -107,17 +118,24 @@ def build_decision_table(rows):
                 if any(row.get(rel_key, '') != '' for row in main_rows):
                     add_summary(out_rows, method, main_rows, rel_key,
                                 prefix + '/predicted_risk_rate',
-                                ece_key=prefix + '/ece')
+                                ece_key=prefix + '/ece',
+                                acc_key=prefix + '/accu',
+                                f1_key=prefix + '/f1_avg')
                 else:
                     add_summary(out_rows, method, main_rows, None,
                                 prefix + '/predicted_risk_rate',
                                 ece_key=prefix + '/ece',
-                                method_fn_key=prefix + '/fn_rate')
+                                method_fn_key=prefix + '/fn_rate',
+                                acc_key=prefix + '/accu',
+                                f1_key=prefix + '/f1_avg')
         add_summary(out_rows, 'CRC only', main_rows, 'crc_rel_fn_drop',
-                    'crc/predicted_risk_rate')
+                    'crc/predicted_risk_rate',
+                    acc_key='crc/accu', f1_key='crc/f1_avg')
         add_summary(out_rows, 'CRC + Rescue', main_rows,
                     'full_rel_fn_drop',
-                    'risk_rescue/predicted_risk_rate')
+                    'risk_rescue/predicted_risk_rate',
+                    acc_key='risk_rescue/accu',
+                    f1_key='risk_rescue/f1_avg')
 
     threshold_rows = by_suite.get('threshold_multi_seed', [])
     by_threshold = defaultdict(list)
@@ -127,13 +145,17 @@ def build_decision_table(rows):
         add_summary(out_rows, f'Fixed threshold {threshold}',
                     by_threshold[threshold], 'fixed_rel_fn_drop',
                     'fixed_threshold/predicted_risk_rate',
-                    ece_key='temp/ece')
+                    ece_key='temp/ece',
+                    acc_key='fixed_threshold/accu',
+                    f1_key='fixed_threshold/f1_avg')
 
     calibrated_rows = by_suite.get('calibrated_fixed', [])
     if calibrated_rows:
         add_summary(out_rows, 'Calibrated head fixed',
                     calibrated_rows, 'calibrated_fixed_rel_fn_drop',
-                    'calibrated_fixed/predicted_risk_rate')
+                    'calibrated_fixed/predicted_risk_rate',
+                    acc_key='calibrated_fixed/accu',
+                    f1_key='calibrated_fixed/f1_avg')
         red_mean, red_std = mean_std([
             to_float(row.get('calibrated_fixed/red_threshold'))
             for row in calibrated_rows])
