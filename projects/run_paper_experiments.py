@@ -155,6 +155,8 @@ def selected_row(alias, suite, seed, red_alpha, green_alpha, threshold, metrics)
         'status': 'ok',
         'returncode': '',
         'error': '',
+        'temp_rel_fn_drop': rel_drop(metrics, 'temp'),
+        'ats_rel_fn_drop': rel_drop(metrics, 'ats'),
         'crc_rel_fn_drop': rel_drop(metrics, 'crc'),
         'full_rel_fn_drop': rel_drop(metrics, 'risk_rescue'),
         'fixed_rel_fn_drop': rel_drop(metrics, 'fixed_threshold'),
@@ -329,7 +331,7 @@ def main():
     parser.add_argument('--temperature-steps', type=int, default=91)
     parser.add_argument('--calibration-baselines', action='store_true')
     parser.add_argument('--calibration-baseline-methods', type=str,
-                        default='local_temp,parameterized_temp,adaptive_temp')
+                        default='adaptive_temp')
     parser.add_argument('--local-temperature-bins', type=int, default=2)
     parser.add_argument('--temperature-fit-max-points', type=int, default=200000)
     parser.add_argument('--parameterized-temperature-steps', type=int, default=120)

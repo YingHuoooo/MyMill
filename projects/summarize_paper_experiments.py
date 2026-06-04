@@ -47,9 +47,23 @@ def fmt(value, scale=1.0, digits=2):
     return f'{value * scale:.{digits}f}'
 
 
+def _relative_drop(row, base_key, method_key):
+    base_value = to_float(row.get(base_key))
+    method_value = to_float(row.get(method_key))
+    if base_value is None or method_value is None or base_value == 0:
+        return None
+    return 100.0 * (base_value - method_value) / base_value
+
+
 def add_summary(out_rows, method, rows, fn_key, risk_key, ece_key=None,
-                threshold_key=None):
-    fn_mean, fn_std = mean_std([to_float(row.get(fn_key)) for row in rows])
+                threshold_key=None, method_fn_key=None):
+    if method_fn_key:
+        fn_values = [
+            _relative_drop(row, 'baseline/fn_rate', method_fn_key)
+            for row in rows]
+    else:
+        fn_values = [to_float(row.get(fn_key)) for row in rows]
+    fn_mean, fn_std = mean_std(fn_values)
     risk_mean, risk_std = mean_std([to_float(row.get(risk_key)) for row in rows])
     ece_mean, ece_std = mean_std([to_float(row.get(ece_key)) for row in rows]) \
         if ece_key else (None, None)
@@ -85,18 +99,20 @@ def build_decision_table(rows):
         out_rows[-1]['rel_fn_drop_mean'] = '--'
         out_rows[-1]['rel_fn_drop_std'] = '--'
         calibration_methods = [
-            ('Global TS', 'temp'),
-            ('Local TS', 'lts'),
-            ('Parameterized TS', 'pts'),
-            ('Adaptive TS', 'ats'),
+            ('Global TS', 'temp', 'temp_rel_fn_drop'),
+            ('Adaptive TS', 'ats', 'ats_rel_fn_drop'),
         ]
-        for method, prefix in calibration_methods:
+        for method, prefix, rel_key in calibration_methods:
             if any(row.get(prefix + '/ece', '') != '' for row in main_rows):
-                add_summary(out_rows, method, main_rows, None,
-                            prefix + '/predicted_risk_rate',
-                            ece_key=prefix + '/ece')
-                out_rows[-1]['rel_fn_drop_mean'] = '--'
-                out_rows[-1]['rel_fn_drop_std'] = '--'
+                if any(row.get(rel_key, '') != '' for row in main_rows):
+                    add_summary(out_rows, method, main_rows, rel_key,
+                                prefix + '/predicted_risk_rate',
+                                ece_key=prefix + '/ece')
+                else:
+                    add_summary(out_rows, method, main_rows, None,
+                                prefix + '/predicted_risk_rate',
+                                ece_key=prefix + '/ece',
+                                method_fn_key=prefix + '/fn_rate')
         add_summary(out_rows, 'CRC only', main_rows, 'crc_rel_fn_drop',
                     'crc/predicted_risk_rate')
         add_summary(out_rows, 'CRC + Rescue', main_rows,

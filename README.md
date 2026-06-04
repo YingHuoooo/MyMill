@@ -153,8 +153,6 @@ projects/logs/seg_deepmill/<alias>/mc_cp_crc_results.json
 
 When `--calibration-baselines` is enabled, the summary additionally reports:
 
-- `lts/*` for Local Temperature Scaling with spatial point bins;
-- `pts/*` for Parameterized Temperature Scaling with confidence, margin, and entropy features;
 - `ats/*` for entropy based Adaptive Temperature Scaling.
 
 For multi seed paper experiments:
