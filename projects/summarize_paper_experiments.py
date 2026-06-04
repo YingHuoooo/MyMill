@@ -84,6 +84,19 @@ def build_decision_table(rows):
                     ece_key='baseline/ece')
         out_rows[-1]['rel_fn_drop_mean'] = '--'
         out_rows[-1]['rel_fn_drop_std'] = '--'
+        calibration_methods = [
+            ('Global TS', 'temp'),
+            ('Local TS', 'lts'),
+            ('Parameterized TS', 'pts'),
+            ('Adaptive TS', 'ats'),
+        ]
+        for method, prefix in calibration_methods:
+            if any(row.get(prefix + '/ece', '') != '' for row in main_rows):
+                add_summary(out_rows, method, main_rows, None,
+                            prefix + '/predicted_risk_rate',
+                            ece_key=prefix + '/ece')
+                out_rows[-1]['rel_fn_drop_mean'] = '--'
+                out_rows[-1]['rel_fn_drop_std'] = '--'
         add_summary(out_rows, 'CRC only', main_rows, 'crc_rel_fn_drop',
                     'crc/predicted_risk_rate')
         add_summary(out_rows, 'CRC + Rescue', main_rows,

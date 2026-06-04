@@ -375,6 +375,18 @@ class SegSolver(Solver):
         return torch.nn.functional.softmax(logit / temperature, dim=1)
 
     @staticmethod
+    def _temperature_scaled_prob_vector(logit, temperature):
+        if not isinstance(temperature, torch.Tensor):
+            temperature = torch.tensor(
+                temperature, dtype=logit.dtype, device=logit.device)
+        temperature = temperature.to(device=logit.device, dtype=logit.dtype)
+        if temperature.dim() == 0:
+            return torch.nn.functional.softmax(
+                logit / temperature.clamp_min(1.0e-6), dim=1)
+        return torch.nn.functional.softmax(
+            logit / temperature.clamp_min(1.0e-6).view(-1, 1), dim=1)
+
+    @staticmethod
     def _fit_temperature_grid(logits, labels, min_temperature,
                               max_temperature, steps):
         if not logits:
@@ -396,6 +408,216 @@ class SegSolver(Solver):
                 best_loss = loss
                 best_temperature = float(temperature)
         return best_temperature
+
+    @staticmethod
+    def _parse_calibration_methods(text):
+        aliases = {
+            'lts': 'local_temp',
+            'local': 'local_temp',
+            'local_temperature': 'local_temp',
+            'local_temperature_scaling': 'local_temp',
+            'pts': 'parameterized_temp',
+            'parameterized': 'parameterized_temp',
+            'parameterized_temperature': 'parameterized_temp',
+            'parameterized_temperature_scaling': 'parameterized_temp',
+            'ats': 'adaptive_temp',
+            'adaptive': 'adaptive_temp',
+            'adaptive_temperature': 'adaptive_temp',
+            'adaptive_temperature_scaling': 'adaptive_temp',
+        }
+        methods = []
+        for item in str(text).split(','):
+            item = item.strip().lower()
+            if not item:
+                continue
+            item = aliases.get(item, item)
+            if item not in ('local_temp', 'parameterized_temp', 'adaptive_temp'):
+                raise ValueError('Unsupported calibration baseline: %s' % item)
+            if item not in methods:
+                methods.append(item)
+        return methods
+
+    @staticmethod
+    def _method_prefix(method):
+        return {
+            'local_temp': 'lts',
+            'parameterized_temp': 'pts',
+            'adaptive_temp': 'ats',
+        }[method]
+
+    @staticmethod
+    def _cat_calibration_records(records, include_points=False):
+        if not records:
+            output = {'logit': None, 'label': None}
+            if include_points:
+                output['points'] = None
+            return output
+        output = {
+            'logit': torch.cat([r['logit'] for r in records], dim=0).float(),
+            'label': torch.cat([r['label'] for r in records], dim=0).long(),
+        }
+        if include_points:
+            output['points'] = torch.cat(
+                [r['points'] for r in records], dim=0).float()
+        return output
+
+    @staticmethod
+    def _subsample_indices(num_points, max_points):
+        max_points = int(max_points)
+        if max_points <= 0 or num_points <= max_points:
+            return None
+        rng = np.random.RandomState(0)
+        return torch.from_numpy(
+            rng.choice(num_points, size=max_points, replace=False)).long()
+
+    @staticmethod
+    def _local_temperature_cell(points, bins, p_min=None, p_max=None):
+        bins = max(1, int(bins))
+        if bins == 1:
+            return torch.zeros(
+                points.shape[0], dtype=torch.long, device=points.device)
+        if p_min is None:
+            p_min = points.min(dim=0).values
+        else:
+            p_min = p_min.to(device=points.device, dtype=points.dtype)
+        if p_max is None:
+            p_max = points.max(dim=0).values
+        else:
+            p_max = p_max.to(device=points.device, dtype=points.dtype)
+        scaled = (points - p_min) / (p_max - p_min).clamp_min(1.0e-6)
+        coord = torch.clamp((scaled * bins).long(), min=0, max=bins - 1)
+        return coord[:, 0] * bins * bins + coord[:, 1] * bins + coord[:, 2]
+
+    def _fit_local_temperature(self, records, min_temperature, max_temperature,
+                               steps, bins):
+        data = self._cat_calibration_records(records, include_points=True)
+        if data['logit'] is None:
+            return {'bins': int(bins), 'global_temperature': 1.0,
+                    'bin_temperature': [1.0] * max(1, int(bins)) ** 3}
+        bins = max(1, int(bins))
+        logits, labels, points = data['logit'], data['label'], data['points']
+        p_min = points.min(dim=0).values
+        p_max = points.max(dim=0).values
+        global_temperature = self._fit_temperature_grid(
+            [logits], [labels], min_temperature, max_temperature, steps)
+        cell = self._local_temperature_cell(points, bins, p_min, p_max)
+        temperatures = [global_temperature] * (bins ** 3)
+        min_points = max(50, int(labels.numel() * 0.002))
+        for bin_id in range(bins ** 3):
+            mask = cell.eq(bin_id)
+            if int(mask.sum().item()) < min_points:
+                continue
+            temperatures[bin_id] = self._fit_temperature_grid(
+                [logits[mask]], [labels[mask]],
+                min_temperature, max_temperature, steps)
+        return {'bins': bins, 'global_temperature': global_temperature,
+                'bin_temperature': temperatures,
+                'point_min': p_min.cpu().tolist(),
+                'point_max': p_max.cpu().tolist()}
+
+    def _apply_local_temperature(self, logit, points, model):
+        bins = int(model.get('bins', 1))
+        temperatures = torch.tensor(
+            model.get('bin_temperature', [model.get('global_temperature', 1.0)]),
+            dtype=logit.dtype, device=logit.device)
+        p_min = torch.tensor(
+            model.get('point_min', [0.0, 0.0, 0.0]),
+            dtype=logit.dtype, device=logit.device)
+        p_max = torch.tensor(
+            model.get('point_max', [1.0, 1.0, 1.0]),
+            dtype=logit.dtype, device=logit.device)
+        cell = self._local_temperature_cell(
+            points.to(logit.device), bins, p_min, p_max)
+        cell = torch.clamp(cell, max=temperatures.numel() - 1)
+        return self._temperature_scaled_prob_vector(logit, temperatures[cell])
+
+    @staticmethod
+    def _temperature_features(logit):
+        prob = torch.nn.functional.softmax(logit, dim=1)
+        confidence = prob.max(dim=1).values
+        sorted_prob = torch.sort(prob, dim=1, descending=True).values
+        if sorted_prob.shape[1] > 1:
+            margin = sorted_prob[:, 0] - sorted_prob[:, 1]
+        else:
+            margin = torch.ones_like(confidence)
+        entropy = -(prob.clamp_min(1.0e-8).log() * prob).sum(dim=1)
+        entropy = entropy / max(math.log(float(prob.shape[1])), 1.0e-8)
+        return torch.stack(
+            [torch.ones_like(confidence), confidence, margin, entropy], dim=1)
+
+    def _fit_parametric_temperature(self, records, min_temperature,
+                                    max_temperature, max_points, steps,
+                                    feature_mode):
+        data = self._cat_calibration_records(records, include_points=False)
+        if data['logit'] is None:
+            return {'feature_mode': feature_mode, 'weights': [0.0],
+                    'min_temperature': min_temperature,
+                    'max_temperature': max_temperature}
+        logits, labels = data['logit'], data['label']
+        indices = self._subsample_indices(logits.shape[0], max_points)
+        if indices is not None:
+            logits, labels = logits[indices], labels[indices]
+        features = self._temperature_features(logits)
+        if feature_mode == 'entropy':
+            features = features[:, [0, 3]]
+        weights = torch.zeros(
+            features.shape[1], dtype=torch.float32, requires_grad=True)
+        optimizer = torch.optim.Adam([weights], lr=0.05)
+        min_t = float(min_temperature)
+        max_t = float(max_temperature)
+        for _ in range(max(1, int(steps))):
+            optimizer.zero_grad()
+            log_temperature = features.matmul(weights)
+            temperature = torch.exp(log_temperature).clamp(min_t, max_t)
+            loss = torch.nn.functional.cross_entropy(
+                logits / temperature.view(-1, 1), labels)
+            loss.backward()
+            optimizer.step()
+        return {
+            'feature_mode': feature_mode,
+            'weights': weights.detach().cpu().tolist(),
+            'min_temperature': min_t,
+            'max_temperature': max_t,
+        }
+
+    def _apply_parametric_temperature(self, logit, model):
+        features = self._temperature_features(logit)
+        if model.get('feature_mode') == 'entropy':
+            features = features[:, [0, 3]]
+        weights = torch.tensor(
+            model['weights'], dtype=logit.dtype, device=logit.device)
+        temperature = torch.exp(features.matmul(weights)).clamp(
+            float(model['min_temperature']), float(model['max_temperature']))
+        return self._temperature_scaled_prob_vector(logit, temperature)
+
+    def _fit_calibration_baseline_models(self, records_by_head, methods,
+                                         min_temperature, max_temperature,
+                                         grid_steps, local_bins, max_points,
+                                         pts_steps, ats_steps):
+        models = {}
+        for method in methods:
+            models[method] = {}
+            for name, records in records_by_head.items():
+                if method == 'local_temp':
+                    models[method][name] = self._fit_local_temperature(
+                        records, min_temperature, max_temperature,
+                        grid_steps, local_bins)
+                elif method == 'parameterized_temp':
+                    models[method][name] = self._fit_parametric_temperature(
+                        records, min_temperature, max_temperature, max_points,
+                        pts_steps, 'full')
+                elif method == 'adaptive_temp':
+                    models[method][name] = self._fit_parametric_temperature(
+                        records, min_temperature, max_temperature, max_points,
+                        ats_steps, 'entropy')
+        return models
+
+    def _apply_calibration_baseline(self, method, logit, points, model):
+        if method == 'local_temp':
+            return self._apply_local_temperature(logit, points, model)
+        if method in ('parameterized_temp', 'adaptive_temp'):
+            return self._apply_parametric_temperature(logit, model)
+        raise ValueError('Unsupported calibration baseline: %s' % method)
 
     def _append_head_summary(self, summary, prefix, metrics, risk=None):
         summary[prefix + '/accu'] = metrics['accu']
@@ -809,6 +1031,20 @@ class SegSolver(Solver):
         temperature_max = float(getattr(flags, 'temperature_max', 5.0))
         temperature_steps = int(getattr(flags, 'temperature_steps', 91))
         temperature_by_head = {'red': 1.0, 'green': 1.0}
+        calibration_baselines = bool(
+            getattr(flags, 'calibration_baselines', False))
+        calibration_baseline_methods = self._parse_calibration_methods(
+            getattr(flags, 'calibration_baseline_methods',
+                    'local_temp,parameterized_temp,adaptive_temp'))
+        local_temperature_bins = int(
+            getattr(flags, 'local_temperature_bins', 2))
+        temperature_fit_max_points = int(
+            getattr(flags, 'temperature_fit_max_points', 200000))
+        parameterized_temperature_steps = int(
+            getattr(flags, 'parameterized_temperature_steps', 120))
+        adaptive_temperature_steps = int(
+            getattr(flags, 'adaptive_temperature_steps', 120))
+        calibration_baseline_models = {}
         fixed_threshold = bool(getattr(flags, 'fixed_threshold', False))
         fixed_threshold_by_head = {
             'red': float(getattr(flags, 'fixed_red_threshold', 0.45)),
@@ -906,7 +1142,7 @@ class SegSolver(Solver):
                     ('red', mc_prob_1, label_1),
                     ('green', mc_prob_2, label_2)]:
                 if split == 'calibration':
-                    if temperature_scaling:
+                    if temperature_scaling or calibration_baselines:
                         logit = outputs[
                             'baseline_logit_1' if name == 'red'
                             else 'baseline_logit_2']
@@ -914,8 +1150,9 @@ class SegSolver(Solver):
                             'index': it,
                             'logit': logit.detach().cpu(),
                             'label': label.detach().cpu(),
+                            'points': outputs['point_xyz'].detach().cpu(),
                         })
-                    else:
+                    if not temperature_scaling:
                         cp_scores = self._cp_scores(prob, label, cp_method)
                         calibration_scores[name].extend(cp_scores.cpu().tolist())
                         risk_class = risk_class_by_head[name]
@@ -1012,6 +1249,12 @@ class SegSolver(Solver):
                         'prob': prob.detach().cpu(),
                         'label': label.detach().cpu(),
                     })
+        if calibration_baselines:
+            calibration_baseline_models = self._fit_calibration_baseline_models(
+                temperature_records, calibration_baseline_methods,
+                temperature_min, temperature_max, temperature_steps,
+                local_temperature_bins, temperature_fit_max_points,
+                parameterized_temperature_steps, adaptive_temperature_steps)
 
         qhat = {
             'red': self._conformal_quantile(calibration_scores['red'], alpha),
@@ -1089,6 +1332,25 @@ class SegSolver(Solver):
                      outputs['baseline_logit_1']),
                     ('green', outputs['mc_prob_2'], outputs['label_2'],
                      outputs['baseline_logit_2'])]:
+                if calibration_baselines:
+                    for method in calibration_baseline_methods:
+                        prefix = self._method_prefix(method)
+                        method_prob = self._apply_calibration_baseline(
+                            method, logit, outputs['point_xyz'],
+                            calibration_baseline_models[method][name])
+                        _, _, method_eval_metrics = self._head_eval_one(
+                            prefix + '_' + name, method_prob, label,
+                            risk_class_by_head[name], class_num)
+                        shape_rows[it].update(method_eval_metrics)
+                        method_calib_metrics = \
+                            self._calibration_metrics_from_prob(
+                                method_prob, label, class_num)
+                        for key, value in method_eval_metrics.items():
+                            update_average(key, value)
+                        for key, value in method_calib_metrics.items():
+                            metric_key = prefix + '_' + name + '/' + key
+                            shape_rows[it][metric_key] = value
+                            update_average(metric_key, value)
                 if temperature_scaling:
                     prob = self._temperature_scaled_prob(
                         logit, temperature_by_head[name])
@@ -1291,6 +1553,22 @@ class SegSolver(Solver):
                 averaged_metrics['temp/' + metric_name] = (
                     averaged_metrics['temp_red/' + metric_name] +
                     averaged_metrics['temp_green/' + metric_name]) / 2.0
+        if calibration_baselines:
+            for method in calibration_baseline_methods:
+                prefix = self._method_prefix(method)
+                averaged_metrics[prefix + '/accu'] = (
+                    averaged_metrics[prefix + '_red/accu'] +
+                    averaged_metrics[prefix + '_green/accu']) / 2.0
+                averaged_metrics[prefix + '/f1_avg'] = (
+                    averaged_metrics[prefix + '_red/f1'] +
+                    averaged_metrics[prefix + '_green/f1']) / 2.0
+                for metric_name in (
+                        'nll', 'brier', 'ece',
+                        'fn_rate', 'predicted_risk_rate'):
+                    averaged_metrics[prefix + '/' + metric_name] = (
+                        averaged_metrics[prefix + '_red/' + metric_name] +
+                        averaged_metrics[prefix + '_green/' + metric_name]
+                    ) / 2.0
         if fixed_threshold:
             averaged_metrics['fixed_threshold/accu'] = (
                 averaged_metrics['fixed_threshold_red/accu'] +
@@ -1377,6 +1655,13 @@ class SegSolver(Solver):
             'temperature_max': temperature_max,
             'temperature_steps': temperature_steps,
             'temperature_by_head': temperature_by_head,
+            'calibration_baselines': calibration_baselines,
+            'calibration_baseline_methods': calibration_baseline_methods,
+            'calibration_baseline_models': calibration_baseline_models,
+            'local_temperature_bins': local_temperature_bins,
+            'temperature_fit_max_points': temperature_fit_max_points,
+            'parameterized_temperature_steps': parameterized_temperature_steps,
+            'adaptive_temperature_steps': adaptive_temperature_steps,
             'fixed_threshold': fixed_threshold,
             'fixed_threshold_by_head': fixed_threshold_by_head,
             'calibrated_fixed_threshold': calibrated_fixed_threshold,
@@ -1421,6 +1706,11 @@ class SegSolver(Solver):
         if temperature_scaling:
             msg += ', T(red): %.3f, T(green): %.3f' % (
                 temperature_by_head['red'], temperature_by_head['green'])
+        if calibration_baselines:
+            for method in calibration_baseline_methods:
+                prefix = self._method_prefix(method)
+                msg += ', %s ece: %.4f' % (
+                    prefix, averaged_metrics[prefix + '/ece'])
         if fixed_threshold:
             msg += ', fixed_threshold fn_rate: %.4f' % (
                 averaged_metrics['fixed_threshold/fn_rate'])

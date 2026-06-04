@@ -128,6 +128,7 @@ python run_mc_cp_crc.py \
   --split-seed 123 \
   --mc-samples 1 \
   --temperature-scaling \
+  --calibration-baselines \
   --cp-method threshold \
   --alpha 0.1 \
   --red-crc-alpha 0.03 \
@@ -150,13 +151,20 @@ projects/logs/seg_deepmill/<alias>/mc_cp_crc_shapes.csv
 projects/logs/seg_deepmill/<alias>/mc_cp_crc_results.json
 ```
 
+When `--calibration-baselines` is enabled, the summary additionally reports:
+
+- `lts/*` for Local Temperature Scaling with spatial point bins;
+- `pts/*` for Parameterized Temperature Scaling with confidence, margin, and entropy features;
+- `ats/*` for entropy based Adaptive Temperature Scaling.
+
 For multi seed paper experiments:
 
 ```bash
 python run_paper_experiments.py \
   --suite all \
   --alias-prefix paper_v1 \
-  --seeds "123,456,789"
+  --seeds "123,456,789" \
+  --calibration-baselines
 ```
 
 For the review threshold comparison:

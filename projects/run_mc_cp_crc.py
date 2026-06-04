@@ -48,6 +48,13 @@ parser.add_argument('--temperature-scaling', action='store_true')
 parser.add_argument('--temperature-min', type=float, default=0.5)
 parser.add_argument('--temperature-max', type=float, default=5.0)
 parser.add_argument('--temperature-steps', type=int, default=91)
+parser.add_argument('--calibration-baselines', action='store_true')
+parser.add_argument('--calibration-baseline-methods', type=str,
+                    default='local_temp,parameterized_temp,adaptive_temp')
+parser.add_argument('--local-temperature-bins', type=int, default=2)
+parser.add_argument('--temperature-fit-max-points', type=int, default=200000)
+parser.add_argument('--parameterized-temperature-steps', type=int, default=120)
+parser.add_argument('--adaptive-temperature-steps', type=int, default=120)
 parser.add_argument('--fixed-threshold', action='store_true')
 parser.add_argument('--fixed-red-threshold', type=float, default=0.45)
 parser.add_argument('--fixed-green-threshold', type=float, default=0.45)
@@ -113,6 +120,16 @@ cmds = [
     'CALIB.temperature_min {}'.format(args.temperature_min),
     'CALIB.temperature_max {}'.format(args.temperature_max),
     'CALIB.temperature_steps {}'.format(args.temperature_steps),
+    'CALIB.calibration_baselines {}'.format(args.calibration_baselines),
+    'CALIB.calibration_baseline_methods {}'.format(
+        args.calibration_baseline_methods),
+    'CALIB.local_temperature_bins {}'.format(args.local_temperature_bins),
+    'CALIB.temperature_fit_max_points {}'.format(
+        args.temperature_fit_max_points),
+    'CALIB.parameterized_temperature_steps {}'.format(
+        args.parameterized_temperature_steps),
+    'CALIB.adaptive_temperature_steps {}'.format(
+        args.adaptive_temperature_steps),
     'CALIB.fixed_threshold {}'.format(args.fixed_threshold),
     'CALIB.fixed_red_threshold {}'.format(args.fixed_red_threshold),
     'CALIB.fixed_green_threshold {}'.format(args.fixed_green_threshold),

@@ -80,6 +80,30 @@ def selected_row(alias, suite, seed, red_alpha, green_alpha, threshold, metrics)
         'temp_red/predicted_risk_rate',
         'temp_green/accu', 'temp_green/f1', 'temp_green/fn_rate',
         'temp_green/predicted_risk_rate',
+        'lts/accu', 'lts/f1_avg', 'lts/ece', 'lts/nll', 'lts/brier',
+        'lts/fn_rate', 'lts/predicted_risk_rate',
+        'lts_red/accu', 'lts_red/f1', 'lts_red/ece', 'lts_red/nll',
+        'lts_red/brier', 'lts_red/fn_rate',
+        'lts_red/predicted_risk_rate',
+        'lts_green/accu', 'lts_green/f1', 'lts_green/ece',
+        'lts_green/nll', 'lts_green/brier', 'lts_green/fn_rate',
+        'lts_green/predicted_risk_rate',
+        'pts/accu', 'pts/f1_avg', 'pts/ece', 'pts/nll', 'pts/brier',
+        'pts/fn_rate', 'pts/predicted_risk_rate',
+        'pts_red/accu', 'pts_red/f1', 'pts_red/ece', 'pts_red/nll',
+        'pts_red/brier', 'pts_red/fn_rate',
+        'pts_red/predicted_risk_rate',
+        'pts_green/accu', 'pts_green/f1', 'pts_green/ece',
+        'pts_green/nll', 'pts_green/brier', 'pts_green/fn_rate',
+        'pts_green/predicted_risk_rate',
+        'ats/accu', 'ats/f1_avg', 'ats/ece', 'ats/nll', 'ats/brier',
+        'ats/fn_rate', 'ats/predicted_risk_rate',
+        'ats_red/accu', 'ats_red/f1', 'ats_red/ece', 'ats_red/nll',
+        'ats_red/brier', 'ats_red/fn_rate',
+        'ats_red/predicted_risk_rate',
+        'ats_green/accu', 'ats_green/f1', 'ats_green/ece',
+        'ats_green/nll', 'ats_green/brier', 'ats_green/fn_rate',
+        'ats_green/predicted_risk_rate',
         'crc/accu', 'crc/f1_avg',
         'crc/fn_rate', 'crc/predicted_risk_rate',
         'crc_red/accu', 'crc_red/f1', 'crc_red/fn_rate',
@@ -214,6 +238,20 @@ def run_one(args, suite, alias, seed, red_alpha, green_alpha,
         '--green-risk-class', '1',
         '--test-take', str(args.test_take),
     ]
+    if args.calibration_baselines:
+        cmd.extend([
+            '--calibration-baselines',
+            '--calibration-baseline-methods',
+            args.calibration_baseline_methods,
+            '--local-temperature-bins',
+            str(args.local_temperature_bins),
+            '--temperature-fit-max-points',
+            str(args.temperature_fit_max_points),
+            '--parameterized-temperature-steps',
+            str(args.parameterized_temperature_steps),
+            '--adaptive-temperature-steps',
+            str(args.adaptive_temperature_steps),
+        ])
     if fixed_threshold is not None:
         cmd.extend([
             '--fixed-threshold',
@@ -289,6 +327,13 @@ def main():
     parser.add_argument('--temperature-min', type=float, default=0.5)
     parser.add_argument('--temperature-max', type=float, default=5.0)
     parser.add_argument('--temperature-steps', type=int, default=91)
+    parser.add_argument('--calibration-baselines', action='store_true')
+    parser.add_argument('--calibration-baseline-methods', type=str,
+                        default='local_temp,parameterized_temp,adaptive_temp')
+    parser.add_argument('--local-temperature-bins', type=int, default=2)
+    parser.add_argument('--temperature-fit-max-points', type=int, default=200000)
+    parser.add_argument('--parameterized-temperature-steps', type=int, default=120)
+    parser.add_argument('--adaptive-temperature-steps', type=int, default=120)
     parser.add_argument('--calibration-ratio', type=float, default=0.2)
     parser.add_argument('--seeds', default='123,456,789')
     parser.add_argument('--alpha-pairs',
