@@ -5,6 +5,7 @@
 import argparse
 import os
 import subprocess
+import sys
 
 
 def str2bool(value):
@@ -37,7 +38,7 @@ parser.add_argument('--cp-method', type=str, default='threshold',
                     choices=['threshold', 'aps'])
 parser.add_argument('--crc-alpha', type=float, default=0.05)
 parser.add_argument('--red-crc-alpha', type=float, default=0.03)
-parser.add_argument('--green-crc-alpha', type=float, default=0.05)
+parser.add_argument('--green-crc-alpha', type=float, default=0.03)
 parser.add_argument('--crc-max-threshold', type=float, default=1.0)
 parser.add_argument('--risk-rescue', '--selective-risk-rescue',
                     dest='risk_rescue', action='store_true')
@@ -47,6 +48,13 @@ parser.add_argument('--temperature-scaling', action='store_true')
 parser.add_argument('--temperature-min', type=float, default=0.5)
 parser.add_argument('--temperature-max', type=float, default=5.0)
 parser.add_argument('--temperature-steps', type=int, default=91)
+parser.add_argument('--fixed-threshold', action='store_true')
+parser.add_argument('--fixed-red-threshold', type=float, default=0.45)
+parser.add_argument('--fixed-green-threshold', type=float, default=0.45)
+parser.add_argument('--calibrated-fixed-threshold', action='store_true')
+parser.add_argument('--calibrated-fixed-thresholds', type=str,
+                    default='0.30,0.35,0.40,0.45,0.50')
+parser.add_argument('--calibrated-fixed-budget', type=float, default=0.002)
 parser.add_argument('--adaptive-crc', action='store_true')
 parser.add_argument('--adaptive-crc-bins', type=int, default=2)
 parser.add_argument('--adaptive-crc-score', type=str, default='entropy',
@@ -69,7 +77,8 @@ if args.split_seed < 0:
 data = 'data'
 cat = 'models'
 logdir = os.path.join('logs', 'seg_deepmill', args.alias)
-script = 'python segmentation.py --config configs/seg_deepmill.yaml'
+script = '{} segmentation.py --config configs/seg_deepmill.yaml'.format(
+    sys.executable)
 
 cmds = [
     script,
@@ -104,6 +113,9 @@ cmds = [
     'CALIB.temperature_min {}'.format(args.temperature_min),
     'CALIB.temperature_max {}'.format(args.temperature_max),
     'CALIB.temperature_steps {}'.format(args.temperature_steps),
+    'CALIB.fixed_threshold {}'.format(args.fixed_threshold),
+    'CALIB.fixed_red_threshold {}'.format(args.fixed_red_threshold),
+    'CALIB.fixed_green_threshold {}'.format(args.fixed_green_threshold),
     'CALIB.adaptive_crc {}'.format(args.adaptive_crc),
     'CALIB.adaptive_crc_bins {}'.format(args.adaptive_crc_bins),
     'CALIB.adaptive_crc_score {}'.format(args.adaptive_crc_score),
@@ -115,6 +127,17 @@ cmds = [
     'CALIB.green_risk_class {}'.format(args.green_risk_class),
     'CALIB.save_point_npz {}'.format(args.save_point_npz),
 ]
+
+if args.calibrated_fixed_threshold:
+  cmds.extend([
+      'CALIB.calibrated_fixed_threshold True',
+      'CALIB.calibrated_fixed_thresholds "({})"'.format(
+          args.calibrated_fixed_thresholds),
+      'CALIB.calibrated_fixed_budget {}'.format(
+          args.calibrated_fixed_budget),
+  ])
+else:
+  cmds.append('CALIB.calibrated_fixed_threshold False')
 
 cmd = ' '.join(cmds)
 print('\n', cmd, '\n')

@@ -1,10 +1,17 @@
 pretrained/
+projects/data/
 projects/data/raw_data/
 projects/data/points/
 projects/data/filelist/
 projects/visual/
+projects/generate_qualitative_risk_figure.py
 visual/
 logs/
+projects/logs/
+20260601/
+.codegraph/
+.env
+reasonix.toml
 *.log
 *.pyc
 __pycache__/

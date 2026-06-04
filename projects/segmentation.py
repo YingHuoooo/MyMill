@@ -9,6 +9,7 @@ import os
 import csv
 import json
 import math
+import time
 import torch
 import ocnn
 import numpy as np
@@ -329,6 +330,9 @@ class SegSolver(Solver):
     def _collect_mc_outputs(self, batch):
         mc_samples = max(1, int(self.FLAGS.CALIB.mc_samples))
         batch = self.process_batch(batch, self.FLAGS.DATA.test)
+        points = batch['points']
+        point_labels = points.labels.squeeze(1)
+        point_mask = point_labels > self.FLAGS.LOSS.mask
 
         self.model.eval()
         with torch.no_grad():
@@ -352,6 +356,7 @@ class SegSolver(Solver):
         mc_var_2 = torch.stack(probs_2, dim=0).var(dim=0, unbiased=False).mean(dim=1)
         return {
             'filename': batch['filename'][0],
+            'point_xyz': points.points[point_mask],
             'label_1': label.long(),
             'label_2': label_2.long(),
             'baseline_logit_1': logit_1,
@@ -614,6 +619,66 @@ class SegSolver(Solver):
             }
         return rescue_info
 
+    @staticmethod
+    def _parse_float_grid(text):
+        if isinstance(text, (list, tuple)):
+            values = [float(value) for value in text]
+        else:
+            values = [
+                float(item.strip()) for item in str(text).split(',')
+                if item.strip()]
+        values = sorted(set(max(0.0, min(1.0, value)) for value in values))
+        if not values:
+            values = [0.5]
+        return values
+
+    def _build_calibrated_fixed_threshold(self, records, risk_class_by_head,
+                                          thresholds, max_extra_rate):
+        info = {'threshold': {}, 'calibration': {}}
+        thresholds = self._parse_float_grid(thresholds)
+        max_extra_rate = max(0.0, float(max_extra_rate))
+        for name, head_records in records.items():
+            if not head_records:
+                info['threshold'][name] = 0.5
+                info['calibration'][name] = {}
+                continue
+
+            prob = torch.cat([record['prob'] for record in head_records], dim=0)
+            label = torch.cat([record['label'] for record in head_records], dim=0)
+            risk_class = risk_class_by_head[name]
+            base_pred = self._crc_pred(prob, risk_class, 0.5)
+            base_risk = self._risk_stats(base_pred, label, risk_class)
+            max_predicted_rate = (
+                base_risk['predicted_risk_rate'] + max_extra_rate)
+
+            best_threshold = 0.5
+            best_risk = base_risk
+            for threshold in thresholds:
+                pred = self._crc_pred(prob, risk_class, threshold)
+                risk = self._risk_stats(pred, label, risk_class)
+                if (risk['predicted_risk_rate'] >
+                        max_predicted_rate + 1.0e-12):
+                    continue
+                improves_fn = risk['fn_rate'] < best_risk['fn_rate'] - 1.0e-12
+                ties_fn = abs(risk['fn_rate'] - best_risk['fn_rate']) <= 1.0e-12
+                uses_less_area = (
+                    risk['predicted_risk_rate'] <
+                    best_risk['predicted_risk_rate'] - 1.0e-12)
+                if improves_fn or (ties_fn and uses_less_area):
+                    best_threshold = float(threshold)
+                    best_risk = risk
+
+            info['threshold'][name] = best_threshold
+            info['calibration'][name] = {
+                'base_fn_rate': base_risk['fn_rate'],
+                'base_predicted_risk_rate': base_risk['predicted_risk_rate'],
+                'selected_fn_rate': best_risk['fn_rate'],
+                'selected_predicted_risk_rate':
+                    best_risk['predicted_risk_rate'],
+                'max_extra_rate': max_extra_rate,
+            }
+        return info
+
     def _shape_difficulty(self, prob, score_name):
         prob = prob.detach()
         if score_name == 'entropy':
@@ -708,6 +773,7 @@ class SegSolver(Solver):
         tqdm.write('=> Saved MC-CP+CRC per-shape data to: %s' % shapes_path)
 
     def mccp_crc(self):
+        run_start_time = time.perf_counter()
         self.manual_seed()
         self.config_model()
         self.configure_log(set_writer=False)
@@ -743,6 +809,18 @@ class SegSolver(Solver):
         temperature_max = float(getattr(flags, 'temperature_max', 5.0))
         temperature_steps = int(getattr(flags, 'temperature_steps', 91))
         temperature_by_head = {'red': 1.0, 'green': 1.0}
+        fixed_threshold = bool(getattr(flags, 'fixed_threshold', False))
+        fixed_threshold_by_head = {
+            'red': float(getattr(flags, 'fixed_red_threshold', 0.45)),
+            'green': float(getattr(flags, 'fixed_green_threshold', 0.45)),
+        }
+        calibrated_fixed_threshold = bool(
+            getattr(flags, 'calibrated_fixed_threshold', False))
+        calibrated_fixed_thresholds = getattr(
+            flags, 'calibrated_fixed_thresholds',
+            '0.30,0.35,0.40,0.45,0.50')
+        calibrated_fixed_budget = float(
+            getattr(flags, 'calibrated_fixed_budget', 0.002))
         adaptive_crc = bool(getattr(flags, 'adaptive_crc', False))
         adaptive_crc_score = str(
             getattr(flags, 'adaptive_crc_score', 'entropy')).lower()
@@ -784,6 +862,9 @@ class SegSolver(Solver):
         if flags.save_point_npz:
             os.makedirs(point_dir, exist_ok=True)
 
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        collect_start_time = time.perf_counter()
         for it in tqdm(range(total_shapes), ncols=80, leave=False,
                        disable=self.disable_tqdm):
             batch = next(self.test_iter)
@@ -883,13 +964,23 @@ class SegSolver(Solver):
                 np.savez_compressed(
                     os.path.join(point_dir, '%05d_%s.npz' % (it, safe_name)),
                     split=split,
+                    filename=outputs['filename'],
+                    points=outputs['point_xyz'].cpu().numpy(),
                     label_red=label_1.cpu().numpy(),
                     label_green=label_2.cpu().numpy(),
                     baseline_prob_red=base_prob_1.cpu().numpy(),
                     baseline_prob_green=base_prob_2.cpu().numpy(),
+                    baseline_pred_red=base_prob_1.argmax(dim=1).cpu().numpy(),
+                    baseline_pred_green=base_prob_2.argmax(dim=1).cpu().numpy(),
                     mc_prob_red=mc_prob_1.cpu().numpy(),
-                    mc_prob_green=mc_prob_2.cpu().numpy())
+                    mc_prob_green=mc_prob_2.cpu().numpy(),
+                    mc_pred_red=mc_prob_1.argmax(dim=1).cpu().numpy(),
+                    mc_pred_green=mc_prob_2.argmax(dim=1).cpu().numpy())
 
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        collect_seconds = time.perf_counter() - collect_start_time
+        calibration_start_time = time.perf_counter()
         if temperature_scaling:
             for name, records in temperature_records.items():
                 temperature_by_head[name] = self._fit_temperature_grid(
@@ -932,9 +1023,17 @@ class SegSolver(Solver):
             'green': self._conformal_quantile(
                 crc_scores['green'], crc_alpha_by_head['green']),
         }
+        crc_raw_threshold = {
+            'red': 1.0 - crc_qhat['red'],
+            'green': 1.0 - crc_qhat['green'],
+        }
         crc_threshold = {
-            'red': min(1.0 - crc_qhat['red'], crc_max_threshold),
-            'green': min(1.0 - crc_qhat['green'], crc_max_threshold),
+            'red': min(crc_raw_threshold['red'], crc_max_threshold),
+            'green': min(crc_raw_threshold['green'], crc_max_threshold),
+        }
+        crc_clamped = {
+            'red': float(crc_raw_threshold['red'] > crc_max_threshold),
+            'green': float(crc_raw_threshold['green'] > crc_max_threshold),
         }
         adaptive_crc_info = None
         if adaptive_crc:
@@ -945,9 +1044,20 @@ class SegSolver(Solver):
             risk_rescue_info = self._build_risk_rescue(
                 rescue_records, crc_threshold, risk_class_by_head, class_num,
                 risk_rescue_budget, risk_rescue_min_prob)
+        calibrated_fixed_info = None
+        if calibrated_fixed_threshold:
+            calibrated_fixed_info = self._build_calibrated_fixed_threshold(
+                rescue_records, risk_class_by_head,
+                calibrated_fixed_thresholds, calibrated_fixed_budget)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        calibration_seconds = time.perf_counter() - calibration_start_time
 
         # Re-run the test split once so CP/CRC metrics use calibrated thresholds.
         self.test_iter = iter(self.test_loader)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        eval_start_time = time.perf_counter()
         for it in tqdm(range(total_shapes), ncols=80, leave=False,
                        disable=self.disable_tqdm):
             batch = next(self.test_iter)
@@ -956,6 +1066,23 @@ class SegSolver(Solver):
             batch['iter_num'] = it
             batch['epoch'] = 0
             outputs = self._collect_mc_outputs(batch)
+            point_payload = None
+            if flags.save_point_npz:
+                point_payload = {
+                    'split': 'test',
+                    'filename': outputs['filename'],
+                    'points': outputs['point_xyz'].cpu().numpy(),
+                    'label_red': outputs['label_1'].cpu().numpy(),
+                    'label_green': outputs['label_2'].cpu().numpy(),
+                    'baseline_prob_red': outputs['baseline_prob_1'].cpu().numpy(),
+                    'baseline_prob_green': outputs['baseline_prob_2'].cpu().numpy(),
+                    'baseline_pred_red': outputs['baseline_prob_1'].argmax(dim=1).cpu().numpy(),
+                    'baseline_pred_green': outputs['baseline_prob_2'].argmax(dim=1).cpu().numpy(),
+                    'crc_threshold_red': float(crc_threshold['red']),
+                    'crc_threshold_green': float(crc_threshold['green']),
+                    'temperature_red': float(temperature_by_head['red']),
+                    'temperature_green': float(temperature_by_head['green']),
+                }
 
             for name, prob, label, logit in [
                     ('red', outputs['mc_prob_1'], outputs['label_1'],
@@ -979,6 +1106,28 @@ class SegSolver(Solver):
                     for key, value in temp_calib_metrics.items():
                         shape_rows[it]['temp_' + name + '/' + key] = value
                         update_average('temp_' + name + '/' + key, value)
+                if fixed_threshold:
+                    fixed_metrics = self._crc_eval_one(
+                        'fixed_threshold_' + name, prob, label,
+                        fixed_threshold_by_head[name],
+                        risk_class_by_head[name], class_num)
+                    fixed_metrics[
+                        'fixed_threshold_' + name + '/threshold'] = \
+                        fixed_threshold_by_head[name]
+                    shape_rows[it].update(fixed_metrics)
+                    for key, value in fixed_metrics.items():
+                        update_average(key, value)
+                if calibrated_fixed_threshold:
+                    head_threshold = calibrated_fixed_info['threshold'][name]
+                    calibrated_fixed_metrics = self._crc_eval_one(
+                        'calibrated_fixed_' + name, prob, label,
+                        head_threshold, risk_class_by_head[name], class_num)
+                    calibrated_fixed_metrics[
+                        'calibrated_fixed_' + name + '/threshold'] = \
+                        head_threshold
+                    shape_rows[it].update(calibrated_fixed_metrics)
+                    for key, value in calibrated_fixed_metrics.items():
+                        update_average(key, value)
                 difficulty = self._shape_difficulty(prob, adaptive_crc_score)
                 shape_rows[it]['difficulty_' + name] = difficulty
                 eval_metrics = self._calibrated_eval_one(
@@ -996,6 +1145,32 @@ class SegSolver(Solver):
                     shape_rows[it].update(rescue_metrics)
                     for key, value in rescue_metrics.items():
                         update_average(key, value)
+                if flags.save_point_npz:
+                    risk_class = risk_class_by_head[name]
+                    pred_crc = self._crc_pred(
+                        prob, risk_class, crc_threshold[name])
+                    if risk_rescue:
+                        rescue_threshold = risk_rescue_info['threshold'][name]
+                        pred_full = self._risk_rescue_pred(
+                            prob, risk_class, crc_threshold[name],
+                            rescue_threshold)
+                    else:
+                        rescue_threshold = crc_threshold[name]
+                        pred_full = pred_crc
+                    rescued = torch.logical_and(
+                        pred_full.eq(risk_class), ~pred_crc.eq(risk_class))
+                    point_payload['calibrated_prob_' + name] = \
+                        prob.cpu().numpy()
+                    point_payload['temp_pred_' + name] = \
+                        prob.argmax(dim=1).cpu().numpy()
+                    point_payload['crc_pred_' + name] = \
+                        pred_crc.cpu().numpy()
+                    point_payload['risk_rescue_pred_' + name] = \
+                        pred_full.cpu().numpy()
+                    point_payload['rescued_' + name] = \
+                        rescued.cpu().numpy()
+                    point_payload['rescue_threshold_' + name] = \
+                        float(rescue_threshold)
                 if adaptive_crc:
                     edges = adaptive_crc_info['edges'][name]
                     bin_id = self._difficulty_bin(difficulty, edges)
@@ -1009,7 +1184,15 @@ class SegSolver(Solver):
                     shape_rows[it].update(adaptive_metrics)
                     for key, value in adaptive_metrics.items():
                         update_average(key, value)
+            if flags.save_point_npz:
+                safe_name = outputs['filename'].replace('/', '_').replace('\\', '_')
+                np.savez_compressed(
+                    os.path.join(point_dir, '%05d_%s.npz' % (it, safe_name)),
+                    **point_payload)
 
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        eval_seconds = time.perf_counter() - eval_start_time
         eval_num = total_shapes - cal_num
         averaged_metrics = {}
         for key, value in accum.items():
@@ -1108,6 +1291,66 @@ class SegSolver(Solver):
                 averaged_metrics['temp/' + metric_name] = (
                     averaged_metrics['temp_red/' + metric_name] +
                     averaged_metrics['temp_green/' + metric_name]) / 2.0
+        if fixed_threshold:
+            averaged_metrics['fixed_threshold/accu'] = (
+                averaged_metrics['fixed_threshold_red/accu'] +
+                averaged_metrics['fixed_threshold_green/accu']) / 2.0
+            averaged_metrics['fixed_threshold/f1_avg'] = (
+                averaged_metrics['fixed_threshold_red/f1'] +
+                averaged_metrics['fixed_threshold_green/f1']) / 2.0
+            for metric_name in ('fn_rate', 'predicted_risk_rate'):
+                averaged_metrics['fixed_threshold/' + metric_name] = (
+                    averaged_metrics['fixed_threshold_red/' + metric_name] +
+                    averaged_metrics['fixed_threshold_green/' + metric_name]
+                ) / 2.0
+            averaged_metrics['fixed_threshold/red_threshold'] = \
+                fixed_threshold_by_head['red']
+            averaged_metrics['fixed_threshold/green_threshold'] = \
+                fixed_threshold_by_head['green']
+        if calibrated_fixed_threshold:
+            averaged_metrics['calibrated_fixed/accu'] = (
+                averaged_metrics['calibrated_fixed_red/accu'] +
+                averaged_metrics['calibrated_fixed_green/accu']) / 2.0
+            averaged_metrics['calibrated_fixed/f1_avg'] = (
+                averaged_metrics['calibrated_fixed_red/f1'] +
+                averaged_metrics['calibrated_fixed_green/f1']) / 2.0
+            for metric_name in ('fn_rate', 'predicted_risk_rate'):
+                averaged_metrics['calibrated_fixed/' + metric_name] = (
+                    averaged_metrics[
+                        'calibrated_fixed_red/' + metric_name] +
+                    averaged_metrics[
+                        'calibrated_fixed_green/' + metric_name]
+                ) / 2.0
+            averaged_metrics['calibrated_fixed/red_threshold'] = \
+                calibrated_fixed_info['threshold']['red']
+            averaged_metrics['calibrated_fixed/green_threshold'] = \
+                calibrated_fixed_info['threshold']['green']
+            for name in ('red', 'green'):
+                for key, value in calibrated_fixed_info[
+                        'calibration'][name].items():
+                    averaged_metrics[
+                        'calibrated_fixed_' + name +
+                        '/calibration_' + key] = value
+
+        for name in ('red', 'green'):
+            averaged_metrics['crc_' + name + '/raw_threshold'] = \
+                float(crc_raw_threshold[name])
+            averaged_metrics['crc_' + name + '/threshold'] = \
+                float(crc_threshold[name])
+            averaged_metrics['crc_' + name + '/clamped'] = \
+                float(crc_clamped[name])
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        total_seconds = time.perf_counter() - run_start_time
+        averaged_metrics['timing/collect_seconds'] = float(collect_seconds)
+        averaged_metrics['timing/calibration_seconds'] = float(calibration_seconds)
+        averaged_metrics['timing/eval_seconds'] = float(eval_seconds)
+        averaged_metrics['timing/total_seconds'] = float(total_seconds)
+        averaged_metrics['timing/collect_seconds_per_shape'] = \
+            float(collect_seconds / max(total_shapes, 1))
+        averaged_metrics['timing/eval_seconds_per_shape'] = \
+            float(eval_seconds / max(eval_num, 1))
 
         results = {
             'checkpoint': self.FLAGS.SOLVER.ckpt,
@@ -1134,6 +1377,13 @@ class SegSolver(Solver):
             'temperature_max': temperature_max,
             'temperature_steps': temperature_steps,
             'temperature_by_head': temperature_by_head,
+            'fixed_threshold': fixed_threshold,
+            'fixed_threshold_by_head': fixed_threshold_by_head,
+            'calibrated_fixed_threshold': calibrated_fixed_threshold,
+            'calibrated_fixed_thresholds':
+                self._parse_float_grid(calibrated_fixed_thresholds),
+            'calibrated_fixed_budget': calibrated_fixed_budget,
+            'calibrated_fixed_info': calibrated_fixed_info,
             'adaptive_crc': adaptive_crc,
             'adaptive_crc_score': adaptive_crc_score,
             'adaptive_crc_bins': int(getattr(flags, 'adaptive_crc_bins', 2)),
@@ -1141,7 +1391,19 @@ class SegSolver(Solver):
             'risk_class_by_head': risk_class_by_head,
             'qhat': qhat,
             'crc_qhat': crc_qhat,
+            'crc_raw_threshold': crc_raw_threshold,
             'crc_threshold': crc_threshold,
+            'crc_clamped': crc_clamped,
+            'timing': {
+                'collect_seconds': float(collect_seconds),
+                'calibration_seconds': float(calibration_seconds),
+                'eval_seconds': float(eval_seconds),
+                'total_seconds': float(total_seconds),
+                'collect_seconds_per_shape': float(
+                    collect_seconds / max(total_shapes, 1)),
+                'eval_seconds_per_shape': float(
+                    eval_seconds / max(eval_num, 1)),
+            },
             'metrics': averaged_metrics,
         }
         self._write_mc_cp_crc_outputs(results, shape_rows)
@@ -1159,6 +1421,9 @@ class SegSolver(Solver):
         if temperature_scaling:
             msg += ', T(red): %.3f, T(green): %.3f' % (
                 temperature_by_head['red'], temperature_by_head['green'])
+        if fixed_threshold:
+            msg += ', fixed_threshold fn_rate: %.4f' % (
+                averaged_metrics['fixed_threshold/fn_rate'])
         tqdm.write(msg)
 
 
